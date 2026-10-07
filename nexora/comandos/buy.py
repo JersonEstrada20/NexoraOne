@@ -1,0 +1,290 @@
+import os
+import json
+import sqlite3
+from nexora.db import connect as db_connect
+import time
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.error import BadRequest
+from telegram.ext import ContextTypes
+from nexora.storage import db_path
+from nexora.comandos.utils import (
+    DEFAULT_CHANNEL_LINK,
+    DEFAULT_GROUP_LINK,
+    DEFAULT_OWNER_LINK,
+    DEFAULT_OWNER_TEXT,
+    default_asset_url,
+    fetch_api_json,
+)
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
+DB_PATH = db_path("multiplataforma.db")
+
+cfg = {}
+if os.path.exists(CONFIG_FILE_PATH):
+    try:
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        pass
+
+_CATALOG_CACHE = {"ts": 0.0, "data": None}
+
+
+def non_empty(s: str) -> bool:
+    return isinstance(s, str) and s.strip() != ""
+
+
+def btn(text: str, url: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text, url=url)
+
+
+def _fetch_api_json(path: str, timeout: int = 15):
+    status, data = fetch_api_json(path, timeout=timeout)
+    return data if status == 200 else None
+
+
+def _get_remote_catalog():
+    now = time.monotonic()
+    if _CATALOG_CACHE["data"] is not None and now - float(_CATALOG_CACHE["ts"]) < 30:
+        return _CATALOG_CACHE["data"]
+    js = _fetch_api_json("/bot_catalog")
+    if js and js.get("status") == "ok":
+        data = js.get("data") or {}
+        _CATALOG_CACHE["ts"] = now
+        _CATALOG_CACHE["data"] = data
+        return data
+    return None
+
+
+def _get_buy_groups():
+    remote = _get_remote_catalog()
+    if remote is not None:
+        rows = [row for row in (remote.get("buy_packages") or []) if row.get("is_active", True)]
+        grouped = {"credits": [], "days": []}
+        seen = {}
+        for row in rows:
+            key = (row.get("kind"), row.get("group_slug"))
+            if key not in seen:
+                entry = {
+                    "badge": row.get("badge", ""),
+                    "title": row.get("title", ""),
+                    "subtitle": row.get("subtitle", ""),
+                    "items": [],
+                }
+                grouped.setdefault(row.get("kind"), []).append(entry)
+                seen[key] = entry
+            seen[key]["items"].append(row.get("line_text", ""))
+        return {"credits": grouped.get("credits", []), "days": grouped.get("days", [])}
+
+    conn = db_connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS buy_packages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('credits', 'days')),
+            group_slug TEXT NOT NULL,
+            badge TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            subtitle TEXT DEFAULT '',
+            line_text TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+        """
+    )
+    cur.execute(
+        """
+        SELECT kind, group_slug, badge, title, subtitle, line_text
+        FROM buy_packages
+        WHERE is_active = 1
+        ORDER BY kind ASC, sort_order ASC, id ASC
+        """
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    grouped = {"credits": [], "days": []}
+    seen = {}
+    for row in rows:
+        key = (row["kind"], row["group_slug"])
+        if key not in seen:
+            entry = {
+                "badge": row["badge"],
+                "title": row["title"],
+                "subtitle": row["subtitle"],
+                "items": [],
+            }
+            grouped[row["kind"]].append(entry)
+            seen[key] = entry
+        seen[key]["items"].append(row["line_text"])
+    return grouped
+
+
+def _get_panel_settings():
+    remote = _get_remote_catalog()
+    if remote is not None:
+        return remote.get("settings") or {}
+
+    conn = db_connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        )
+        """
+    )
+    cur.execute("SELECT key, value FROM panel_settings")
+    data = {row["key"]: row["value"] for row in cur.fetchall()}
+    conn.close()
+    return data
+
+
+def _build_buy_text(bot_arroba: str, section: str = "all") -> str:
+    groups = _get_buy_groups()
+    credit_items = sum(len(group.get("items") or []) for group in groups.get("credits", []))
+    day_items = sum(len(group.get("items") or []) for group in groups.get("days", []))
+    parts = [
+        "💎 <b>NEXORA ONE STORE</b>",
+        f"⚡ <b>{bot_arroba}</b> · acceso premium y créditos al instante",
+        f"📦 Catálogo activo: <code>{credit_items}</code> paquetes de créditos · <code>{day_items}</code> paquetes por días",
+    ]
+
+    show_credits = section in {"all", "credits"}
+    show_days = section in {"all", "days"}
+
+    if show_credits:
+        parts.append("")
+        parts.append("💰 <b>Créditos para consultas</b>")
+        parts.append("")
+        if groups["credits"]:
+            for group in groups["credits"]:
+                parts.append(f"{group['badge']} <b>{group['title']}</b> · <code>{group['subtitle']}</code>")
+                for item in group["items"]:
+                    parts.append(f"  └ {item}")
+                parts.append("")
+        else:
+            parts.append("⚠️ Aún no hay paquetes de créditos configurados.")
+            parts.append("")
+
+    if show_days:
+        parts.append("")
+        parts.append("⏳ <b>Planes por tiempo</b>")
+        parts.append("")
+        if groups["days"]:
+            for group in groups["days"]:
+                parts.append(f"{group['badge']} <b>{group['title']}</b> · <code>{group['subtitle']}</code>")
+                for item in group["items"]:
+                    parts.append(f"  └ {item}")
+                parts.append("")
+        else:
+            parts.append("⚠️ Aún no hay planes por días configurados.")
+            parts.append("")
+
+    parts.append("🛡️ <b>Antes de comprar</b> revisa /terminos")
+    parts.append("")
+    parts.append("👇 Elige un vendedor autorizado para completar tu compra.")
+    return "\n".join(parts).strip()
+
+
+def _build_buy_keyboard(settings: dict) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("Todos", callback_data="buy:all"),
+            InlineKeyboardButton("Créditos", callback_data="buy:credits"),
+            InlineKeyboardButton("Días", callback_data="buy:days"),
+        ]
+    ]
+
+    buttons = []
+    owner_text = settings.get("BT_OWNER") or cfg.get("BT_OWNER") or DEFAULT_OWNER_TEXT
+    owner_link = settings.get("OWNER_LINK") or cfg.get("OWNER_LINK") or DEFAULT_OWNER_LINK
+    if non_empty(owner_text) and non_empty(owner_link):
+        buttons.append(btn(f"[❄️] {owner_text}", owner_link))
+
+    sellers = [
+        (settings.get("BT_SELLER") or cfg.get("BT_SELLER"), settings.get("SELLER_LINK") or cfg.get("SELLER_LINK")),
+        (settings.get("BT_SELLER1") or cfg.get("BT_SELLER1"), settings.get("SELLER_LINK1") or cfg.get("SELLER_LINK1")),
+        (settings.get("BT_SELLER2") or cfg.get("BT_SELLER2"), settings.get("SELLER_LINK2") or cfg.get("SELLER_LINK2")),
+        (settings.get("BT_SELLER3") or cfg.get("BT_SELLER3"), settings.get("SELLER_LINK3") or cfg.get("SELLER_LINK3")),
+    ]
+    for text, url in sellers:
+        if non_empty(text) and non_empty(url):
+            buttons.append(btn(f"[❄️] {text}", url))
+
+    for i in range(0, len(buttons), 2):
+        rows.append(buttons[i:i + 2])
+    if buttons:
+        rows.append([InlineKeyboardButton("Actualizar precios", callback_data="buy:all")])
+    extra_buttons = []
+    group_link = settings.get("GRUPO_LINK") or cfg.get("GRUPO_LINK") or DEFAULT_GROUP_LINK
+    channel_link = settings.get("CANAL_LINK") or cfg.get("CANAL_LINK") or DEFAULT_CHANNEL_LINK
+    support_link = settings.get("SUPPORT_LINK") or cfg.get("SUPPORT_LINK") or settings.get("SOPORTE_LINK") or cfg.get("SOPORTE_LINK")
+    terms_link = settings.get("TERMINOS_LINK") or cfg.get("TERMINOS_LINK")
+    if non_empty(group_link):
+        extra_buttons.append(btn("Grupo", group_link))
+    if non_empty(channel_link):
+        extra_buttons.append(btn("Canal", channel_link))
+    if non_empty(support_link):
+        extra_buttons.append(btn("Soporte", support_link))
+    if non_empty(terms_link):
+        extra_buttons.append(btn("Términos", terms_link))
+    for i in range(0, len(extra_buttons), 2):
+        rows.append(extra_buttons[i:i + 2])
+    return InlineKeyboardMarkup(rows)
+
+
+async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    me = await context.bot.get_me()
+    bot_arroba = f"@{me.username}" if non_empty(me.username) else "bot"
+    texto = _build_buy_text(bot_arroba)
+    settings = _get_panel_settings()
+
+    keyboard = _build_buy_keyboard(settings)
+    ft_buy = settings.get("FT_BUY") or (cfg.get("LOGO") or {}).get("FT_BUY") or default_asset_url("ft_buy.png")
+
+    if non_empty(ft_buy):
+        await update.message.reply_photo(
+            photo=ft_buy,
+            caption=texto,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            reply_to_message_id=update.message.message_id,
+        )
+    else:
+        await update.message.reply_text(
+            text=texto,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            reply_to_message_id=update.message.message_id,
+        )
+
+
+async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    section = (query.data or "buy:all").split(":", 1)[-1]
+    if section not in {"all", "credits", "days"}:
+        section = "all"
+    me = await context.bot.get_me()
+    bot_arroba = f"@{me.username}" if non_empty(me.username) else "bot"
+    texto = _build_buy_text(bot_arroba, section=section)
+    keyboard = _build_buy_keyboard(_get_panel_settings())
+    if not query.message:
+        return
+    try:
+        if query.message.photo:
+            await query.message.edit_caption(caption=texto, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await query.message.edit_text(text=texto, parse_mode="HTML", reply_markup=keyboard)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            return
+        await query.message.reply_text(text=texto, parse_mode="HTML", reply_markup=keyboard)

@@ -1,0 +1,6308 @@
+from flask import Flask, jsonify, request, redirect, render_template, session, url_for, Response, send_file
+import sqlite3
+from nexora.db import connect as db_connect
+from nexora.db import remote_enabled, snapshot
+from nexora.db import schema_initializer
+from nexora.assets import init_assets, get_image, put_image, MAX_IMAGE_BYTES
+import tempfile
+from datetime import datetime, timedelta, timezone
+import secrets
+from collections import Counter
+import math
+import hashlib
+import secrets
+import time
+import os
+import json
+import csv
+import io
+import zipfile
+import traceback
+import shutil
+from urllib import parse as _urlparse
+from urllib import request as _urlreq
+from flask_cors import CORS, cross_origin
+from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
+from nexora.storage import db_path, get_data_dir
+
+DB_PATH = db_path("multiplataforma.db")
+HIST_DB_PATH = db_path("historial.db")
+COMPRAS_DB_PATH = db_path("compras.db")
+KEYS_DB_PATH = db_path("keys.db")
+REQUESTS_DB_PATH = db_path("requests.db")
+CONFIG_FILE_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+
+app = Flask(__name__)
+
+CFG = {}
+if os.path.exists(CONFIG_FILE_PATH):
+    try:
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+            CFG = json.load(f) or {}
+    except Exception:
+        CFG = {}
+
+INTERNAL_API_KEY = (
+    os.environ.get("NEXORA_INTERNAL_API_KEY")
+    or os.environ.get("SPIDERSYN_INTERNAL_API_KEY")
+    or os.environ.get("INTERNAL_API_KEY")
+    or CFG.get("INTERNAL_API_KEY")
+    or os.environ.get("SPIDERSYN_TOKEN_BOT")
+    or os.environ.get("TOKEN_BOT")
+    or CFG.get("TOKEN_BOT")
+    or ""
+).strip()
+PANEL_PUBLIC = (
+    str(os.environ.get("NEXORA_PANEL_PUBLIC") or os.environ.get("SPIDERSYN_PANEL_PUBLIC") or CFG.get("PANEL_PUBLIC") or "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+_configured_panel_secret = (
+    os.environ.get("NEXORA_PANEL_SECRET")
+    or os.environ.get("SPIDERSYN_PANEL_SECRET")
+    or CFG.get("PANEL_SECRET")
+)
+
+
+def _load_panel_secret() -> str:
+    if _configured_panel_secret:
+        return str(_configured_panel_secret)
+    if remote_enabled():
+        raise RuntimeError("Configura NEXORA_PANEL_SECRET antes de iniciar la web con Turso")
+    secret_path = os.path.join(get_data_dir(), "panel_secret.key")
+    try:
+        if os.path.exists(secret_path):
+            with open(secret_path, "r", encoding="utf-8") as f:
+                saved = f.read().strip()
+                if saved:
+                    return saved
+        generated = secrets.token_hex(32)
+        with open(secret_path, "w", encoding="utf-8") as f:
+            f.write(generated)
+        return generated
+    except Exception:
+        return secrets.token_hex(32)
+
+
+app.secret_key = _load_panel_secret()
+PANEL_USER = (os.environ.get("NEXORA_PANEL_USER") or os.environ.get("SPIDERSYN_PANEL_USER") or CFG.get("PANEL_USER") or "admin").strip()
+PANEL_PASSWORD = (
+    os.environ.get("NEXORA_PANEL_PASSWORD")
+    or os.environ.get("SPIDERSYN_PANEL_PASSWORD")
+    or CFG.get("PANEL_PASSWORD")
+    or ""
+)
+PANEL_LOGIN_ATTEMPTS = {}
+WEB_LOGIN_ATTEMPTS = {}
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = PANEL_PUBLIC
+_BACKUP_CHECK_TS = 0.0
+_ERROR_NOTIFY_TS = 0.0
+TELEGRAM_TOKEN = (
+    os.environ.get("BOT_TOKEN")
+    or
+    os.environ.get("NEXORA_TOKEN_BOT")
+    or os.environ.get("SPIDERSYN_TOKEN_BOT")
+    or os.environ.get("TOKEN_BOT")
+    or CFG.get("TOKEN_BOT")
+    or ""
+).strip()
+
+
+def _is_loopback_request() -> bool:
+    remote = (request.remote_addr or "").strip()
+    return remote in {"127.0.0.1", "::1", "localhost"}
+
+
+def _panel_request_allowed() -> bool:
+    if PANEL_PUBLIC:
+        return True
+    return _is_loopback_request()
+
+
+def require_internal_access():
+    supplied = (request.headers.get("X-Internal-Api-Key") or "").strip()
+    if INTERNAL_API_KEY and secrets.compare_digest(supplied, INTERNAL_API_KEY):
+        return None
+
+    # Compatibilidad local: solo permite loopback sin header si no hay clave interna configurada.
+    if _is_loopback_request() and not INTERNAL_API_KEY:
+        return None
+
+    return jsonify({"status": "error", "message": "Acceso no autorizado"}), 403
+
+
+def _csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _validate_csrf_token() -> bool:
+    expected = session.get("csrf_token") or ""
+    supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
+    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+
+
+@app.context_processor
+def inject_security_helpers():
+    return {"csrf_token": _csrf_token}
+
+
+@app.before_request
+def enforce_admin_csrf():
+    if request.method != "POST" or not request.path.startswith("/admin/"):
+        return None
+    if not _validate_csrf_token():
+        return jsonify({"status": "error", "message": "CSRF inválido o ausente"}), 400
+    return None
+
+
+@app.before_request
+def maybe_create_daily_backup():
+    if remote_enabled():
+        # The bot exports the unified database to the owner's private channel.
+        # Never block the first HTTP request on a second full remote export.
+        return None
+    global _BACKUP_CHECK_TS
+    now_ts = time.time()
+    if now_ts - _BACKUP_CHECK_TS < 3600:
+        return None
+    _BACKUP_CHECK_TS = now_ts
+    try:
+        ensure_daily_backup(force=False)
+    except Exception:
+        pass
+    return None
+
+
+def request_value(name: str, default=None):
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if name in payload:
+            return payload.get(name)
+    return request.values.get(name, default)
+
+
+def request_token_value() -> str:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth.split(None, 1)[1].strip()
+    return (
+        request.headers.get("X-Api-Token")
+        or request_value("token")
+        or ""
+    ).strip()
+
+
+def _rate_limited(store: dict, key: str, limit: int, window_seconds: int) -> bool:
+    now_ts = time.time()
+    attempts = [ts for ts in store.get(key, []) if now_ts - ts < window_seconds]
+    store[key] = attempts
+    return len(attempts) >= limit
+
+
+def _record_rate_limit_attempt(store: dict, key: str, window_seconds: int):
+    now_ts = time.time()
+    attempts = [ts for ts in store.get(key, []) if now_ts - ts < window_seconds]
+    attempts.append(now_ts)
+    store[key] = attempts
+
+
+def _clear_rate_limit(store: dict, key: str):
+    store.pop(key, None)
+
+
+def configured_admin_ids() -> set[str]:
+    raw = (
+        os.environ.get("NEXORA_ADMIN_ID")
+        or os.environ.get("SPIDERSYN_ADMIN_ID")
+        or os.environ.get("ADMIN_ID")
+        or CFG.get("ADMIN_ID")
+        or "7454664711"
+    )
+    if isinstance(raw, list):
+        values = raw
+    elif raw is None:
+        values = []
+    else:
+        values = str(raw).replace(",", " ").split()
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def send_telegram_message_sync(chat_id: str | int, text: str) -> bool:
+    if not TELEGRAM_TOKEN or not chat_id or not text:
+        return False
+    payload = _urlparse.urlencode(
+        {
+            "chat_id": str(chat_id),
+            "text": text[:3900],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }
+    ).encode("utf-8")
+    req = _urlreq.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with _urlreq.urlopen(req, timeout=8) as resp:
+            return (resp.getcode() or 0) == 200
+    except Exception:
+        return False
+
+# -------------------------
+# Utils
+# -------------------------
+def generate_unique_token() -> str:
+    # 64 chars hex (SHA-256). Mezcla tiempo (ns) + entropía criptográfica
+    seed = f"{time.time_ns()}:{secrets.token_hex(32)}".encode("utf-8")
+    return hashlib.sha256(seed).hexdigest()
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+
+def now_iso() -> str:
+    return now_utc().isoformat() + "Z"
+
+def parse_iso(dt_str: str) -> datetime:
+    # Acepta "YYYY-mm-ddTHH:MM:SSZ" o sin 'Z'
+    s = dt_str.strip()
+    if s.endswith("Z"):
+        s = s[:-1]
+    return datetime.fromisoformat(s)
+
+def get_conn(db_path=DB_PATH):
+    return db_connect(db_path, check_same_thread=False)
+
+@schema_initializer
+def init_main_db():
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id_tg TEXT PRIMARY KEY,
+            rol_tg TEXT DEFAULT 'FREE',
+            fecha_register_tg TEXT,
+
+            creditos INTEGER DEFAULT 5,
+            plan TEXT DEFAULT 'FREE',
+            estado TEXT DEFAULT 'ACTIVO',
+            fecha_caducidad TEXT,
+
+            register_web INTEGER DEFAULT 0,   -- FALSE por defecto
+            register_wsp INTEGER DEFAULT 0,   -- FALSE por defecto
+
+            token_api_web TEXT UNIQUE,
+            user_web TEXT,
+            pass_web TEXT,
+            rol_web TEXT DEFAULT 'FREE',
+            fecha_register_web TEXT,
+
+            token_api_wsp TEXT UNIQUE,
+            number_wsp TEXT,
+            rol_wsp TEXT DEFAULT 'FREE',
+            fecha_register_wsp TEXT,
+
+            antispam INTEGER DEFAULT 60
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+@schema_initializer
+def init_keys_db():
+    conn = get_conn(KEYS_DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS keys (
+        key TEXT PRIMARY KEY,
+        tipo TEXT NOT NULL,
+        cantidad INTEGER NOT NULL,
+        usos INTEGER NOT NULL,
+        creador_id INTEGER NOT NULL,
+        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS redemptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        fecha_canje TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (key) REFERENCES keys(key)
+    )
+    """)
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_redemptions_key ON redemptions(key)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_redemptions_user ON redemptions(user_id)")
+
+    conn.commit()
+    conn.close()    
+
+
+DEFAULT_CATEGORIES = [
+    ("reniec", "RENIEC", "Consultas RENIEC", 1, 1),
+    ("vehiculos", "VEHICULOS", "Consultas vehiculares", 2, 1),
+    ("delitos", "DELITOS", "Antecedentes, requisitorias y denuncias", 3, 1),
+    ("familia", "FAMILIA", "Hogar, arbol y vínculos", 4, 1),
+    ("telefonia", "TELEFONIA", "Operadoras y telefonía", 5, 1),
+    ("sunarp", "SUNARP", "Propiedades y registros", 6, 1),
+    ("laboral", "LABORAL", "Trabajo y planillas", 7, 1),
+    ("actas", "ACTAS", "Actas y documentos relacionados", 8, 1),
+    ("migraciones", "MIGRACIONES", "Consultas migratorias", 9, 1),
+    ("extras", "EXTRAS", "Consultas adicionales", 10, 1),
+]
+
+DEFAULT_CATEGORY_ICONS = {
+    "reniec": "🪪",
+    "vehiculos": "🚗",
+    "delitos": "👮",
+    "familia": "👨‍👩‍👦",
+    "telefonia": "📞",
+    "sunarp": "🏠",
+    "laboral": "💼",
+    "actas": "📋",
+    "migraciones": "⚖️",
+    "extras": "📚",
+}
+
+DEFAULT_COMMANDS = [
+    ("nm", "NM", "reniec", 2),
+    ("dni", "DNI", "reniec", 1),
+    ("dnif", "DNIF", "reniec", 3),
+    ("dnim", "DNIM", "reniec", 2),
+    ("c4", "C4", "reniec", 5),
+    ("c4blanco", "C4 BLANCO", "reniec", 5),
+    ("c4azul", "C4 AZUL", "reniec", 5),
+    ("dnivel", "DNIVEL", "reniec", 5),
+    ("dnivam", "DNIVAM", "reniec", 5),
+    ("dnivaz", "DNIVAZ", "reniec", 5),
+    ("revitec", "REVITEC", "vehiculos", 10),
+    ("tiveqr", "TIVE QR", "vehiculos", 15),
+    ("soat", "SOAT", "vehiculos", 7),
+    ("tive", "TIVE", "vehiculos", 8),
+    ("tiveor", "TIVE OR", "vehiculos", 10),
+    ("tarjetafisica", "TARJETA FISICA", "vehiculos", 10),
+    ("placasiento", "PLACA SIENTO", "vehiculos", 10),
+    ("pla", "PLA", "vehiculos", 3),
+    ("papeletas", "PAPELETAS", "vehiculos", 8),
+    ("bolinv", "BOLINV", "vehiculos", 8),
+    ("insve", "INSVE", "vehiculos", 6),
+    ("licencia", "LICENCIA", "vehiculos", 5),
+    ("licenciapdf", "LICENCIA PDF", "vehiculos", 8),
+    ("rqv", "RQV", "delitos", 10),
+    ("denunciasv", "DENUNCIAS V", "delitos", 10),
+    ("det", "DET", "delitos", 5),
+    ("ant", "ANT", "delitos", 8),
+    ("antpe", "ANTPE", "delitos", 7),
+    ("antpo", "ANTPO", "delitos", 7),
+    ("antju", "ANTJU", "delitos", 7),
+    ("denuncias", "DENUNCIAS", "delitos", 10),
+    ("rq", "RQ", "delitos", 8),
+    ("fis", "FIS", "delitos", 10),
+    ("fispdf", "FIS PDF", "delitos", 25),
+    ("hogar", "HOGAR", "familia", 5),
+    ("ag", "AG", "familia", 10),
+    ("agv", "AGV", "familia", 20),
+    ("her", "HER", "familia", 5),
+    ("numclaro", "NUMCLARO", "telefonia", 7),
+    ("correo", "CORREO", "telefonia", 3),
+    ("enteldb", "ENTELDB", "telefonia", 3),
+    ("movistar", "MOVISTAR", "telefonia", 7),
+    ("bitel", "BITEL", "telefonia", 7),
+    ("claro", "CLARO", "telefonia", 7),
+    ("vlop", "VLOP", "telefonia", 1),
+    ("vlnum", "VLNUM", "telefonia", 1),
+    ("cel", "CEL", "telefonia", 7),
+    ("tels", "TELS", "telefonia", 5),
+    ("telp", "TELP", "telefonia", 7),
+    ("tel", "TEL", "telefonia", 3),
+    ("sunarp", "SUNARP", "sunarp", 10),
+    ("sunarpdf", "SUNARP PDF", "sunarp", 20),
+    ("sueldos", "SUELDOS", "laboral", 5),
+    ("trabajos", "TRABAJOS", "laboral", 5),
+    ("actamdb", "ACTAMDB", "actas", 5),
+    ("actaddb", "ACTADDB", "actas", 5),
+    ("migrapdf", "MIGRAPDF", "migraciones", 6),
+    ("afp", "AFP", "extras", 3),
+    ("dir", "DIR", "extras", 3),
+    ("trabajadores", "TRABAJADORES", "extras", 8),
+    ("sbs", "SBS", "extras", 5),
+    ("notas", "NOTAS", "extras", 25),
+    ("essalud", "ESSALUD", "extras", 3),
+    ("doc", "DOC", "extras", 3),
+    ("ruc", "RUC", "extras", 5),
+    ("sunat", "SUNAT", "extras", 8),
+    ("seeker", "SEEKER", "extras", 10),
+    ("facial", "FACIAL", "extras", 30),
+]
+
+DEFAULT_BUY_PACKAGES = [
+    ("credits", "basico", "🔰", "BASICO", "45's", "50 + 20 Creditos ➩ 10 Soles", 1, 1),
+    ("credits", "basico", "🔰", "BASICO", "45's", "100 + 30 Creditos ➩ 15 Soles", 2, 1),
+    ("credits", "basico", "🔰", "BASICO", "45's", "200 + 50 Creditos ➩ 23 Soles", 3, 1),
+    ("credits", "basico", "🔰", "BASICO", "45's", "350 + 80 Creditos ➩ 30 Soles", 4, 1),
+    ("credits", "standard", "⭐", "STANDARD", "15's", "500 + 100 Creditos ➩ 50 Soles", 5, 1),
+    ("credits", "standard", "⭐", "STANDARD", "15's", "800 + 150 Creditos ➩ 70 Soles", 6, 1),
+    ("credits", "standard", "⭐", "STANDARD", "15's", "1000 + 200 Creditos ➩ 90 Soles", 7, 1),
+    ("credits", "premium", "💎", "PREMIUM", "5's", "1500 + 200 Creditos ➩ 100 Soles", 8, 1),
+    ("credits", "premium", "💎", "PREMIUM", "5's", "2000 + 300 Creditos ➩ 130 Soles", 9, 1),
+    ("credits", "premium", "💎", "PREMIUM", "5's", "2800 + 400 Creditos ➩ 170 Soles", 10, 1),
+    ("days", "basico-dias", "🔰", "BASICO - NV1", "25's", "3 Dias ➩ 12 Soles", 11, 1),
+    ("days", "basico-dias", "🔰", "BASICO - NV1", "25's", "7 Dias ➩ 17 Soles", 12, 1),
+    ("days", "standard-dias", "⭐", "STANDARD - NV2", "15's", "15 Dias ➩ 30 Soles", 13, 1),
+    ("days", "standard-dias", "⭐", "STANDARD - NV2", "15's", "30 Dias ➩ 50 Soles", 14, 1),
+    ("days", "premium-dias", "💎", "PREMIUM - NV3", "5's", "60 Dias ➩ 75 Soles", 15, 1),
+    ("days", "premium-dias", "💎", "PREMIUM - NV3", "5's", "90 Dias ➩ 110 Soles", 16, 1),
+]
+
+DEFAULT_PANEL_SETTINGS = [
+    ("BOT_NAME", CFG.get("BOT_NAME") or CFG.get("NAME") or "NEXORA ONE ⇒"),
+    ("BT_OWNER", CFG.get("BT_OWNER") or "@PeruDoxer"),
+    ("OWNER_LINK", CFG.get("OWNER_LINK") or "https://t.me/PeruDoxer"),
+    ("BT_CANAL", CFG.get("BT_CANAL") or "CANAL OFICIAL"),
+    ("CANAL_LINK", CFG.get("CANAL_LINK") or "https://t.me/NexoraOneOficial"),
+    ("BT_GRUPO", CFG.get("BT_GRUPO") or "ABRIR BOT"),
+    ("GRUPO_LINK", CFG.get("GRUPO_LINK") or "https://t.me/NexoraOneRoBot"),
+    ("BT_SELLER", CFG.get("BT_SELLER") or ""),
+    ("SELLER_LINK", CFG.get("SELLER_LINK") or ""),
+    ("BT_SELLER1", CFG.get("BT_SELLER1") or ""),
+    ("SELLER_LINK1", CFG.get("SELLER_LINK1") or ""),
+    ("BT_SELLER2", CFG.get("BT_SELLER2") or ""),
+    ("SELLER_LINK2", CFG.get("SELLER_LINK2") or ""),
+    ("BT_SELLER3", CFG.get("BT_SELLER3") or ""),
+    ("SELLER_LINK3", CFG.get("SELLER_LINK3") or ""),
+    ("FT_BUY", ((CFG.get("LOGO") or {}).get("FT_BUY") or "")),
+    ("FT_CMDS", ((CFG.get("LOGO") or {}).get("FT_CMDS") or "")),
+    ("FT_CMDSADMIN", ((CFG.get("LOGO") or {}).get("FT_CMDSADMIN") or "")),
+    ("FT_START", ((CFG.get("LOGO") or {}).get("FT_START") or "")),
+]
+
+
+@schema_initializer
+def init_catalog_db():
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS command_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            icon TEXT DEFAULT '',
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(command_categories)")
+    category_columns = {row[1] for row in cur.fetchall()}
+    if "icon" not in category_columns:
+        cur.execute("ALTER TABLE command_categories ADD COLUMN icon TEXT DEFAULT ''")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS command_catalog (
+            slug TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            category_id INTEGER,
+            cost INTEGER NOT NULL DEFAULT 1,
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
+            usage_hint TEXT DEFAULT '',
+            FOREIGN KEY (category_id) REFERENCES command_categories(id)
+        )
+        """
+    )
+    for slug, name, description, sort_order, is_active in DEFAULT_CATEGORIES:
+        cur.execute(
+            """
+            INSERT INTO command_categories (slug, name, description, icon, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                name = COALESCE(command_categories.name, excluded.name),
+                icon = COALESCE(NULLIF(command_categories.icon, ''), excluded.icon)
+            """,
+            (slug, name, description, DEFAULT_CATEGORY_ICONS.get(slug, "🧩"), sort_order, is_active),
+        )
+    conn.commit()
+
+    cur.execute("SELECT id, slug FROM command_categories")
+    category_ids = {row["slug"]: row["id"] for row in cur.fetchall()}
+    for idx, (slug, name, category_slug, cost) in enumerate(DEFAULT_COMMANDS, start=1):
+        cur.execute(
+            """
+            INSERT INTO command_catalog (slug, name, category_id, cost, is_active, sort_order)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(slug) DO NOTHING
+            """,
+            (slug, name, category_ids.get(category_slug), cost, idx),
+        )
+    conn.commit()
+    conn.close()
+
+
+@schema_initializer
+def init_buy_db():
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS buy_packages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('credits', 'days')),
+            group_slug TEXT NOT NULL,
+            badge TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            subtitle TEXT DEFAULT '',
+            line_text TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+        """
+    )
+    for kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active in DEFAULT_BUY_PACKAGES:
+        cur.execute(
+            """
+            INSERT INTO buy_packages (kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM buy_packages
+                WHERE kind = ? AND group_slug = ? AND line_text = ?
+            )
+            """,
+            (kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active, kind, group_slug, line_text),
+        )
+    conn.commit()
+    conn.close()
+
+
+@schema_initializer
+def init_panel_settings_db():
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        )
+        """
+    )
+    for key, value in DEFAULT_PANEL_SETTINGS:
+        cur.execute(
+            """
+            INSERT INTO panel_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (key, value),
+        )
+    cur.execute("SELECT value FROM panel_settings WHERE key = 'BOT_NAME'")
+    row = cur.fetchone()
+    current_brand = str(row[0] if row else "").strip().upper()
+    if current_brand in {"", "#SPIDERSYN", "#SPIDERSYN ⇒", "SPIDERSYN", "SPIDERSYN ⇒"}:
+        cur.execute(
+            """
+            INSERT INTO panel_settings (key, value)
+            VALUES ('BOT_NAME', 'NEXORA ONE ⇒')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """
+        )
+    conn.commit()
+    conn.close()
+
+
+def sync_owner_users():
+    admin_ids = configured_admin_ids()
+    if not admin_ids:
+        return
+    owner_exp = "2099-12-31T23:59:59Z"
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    for admin_id in admin_ids:
+        cur.execute(
+            """
+            INSERT INTO usuarios (
+                id_tg, rol_tg, fecha_register_tg, creditos, plan, estado,
+                fecha_caducidad, rol_web, rol_wsp, antispam
+            )
+            VALUES (?, 'FUNDADOR', ?, 999999, 'PREMIUM', 'ACTIVO', ?, 'FUNDADOR', 'FUNDADOR', 0)
+            ON CONFLICT(id_tg) DO UPDATE SET
+                rol_tg = 'FUNDADOR',
+                rol_web = 'FUNDADOR',
+                rol_wsp = 'FUNDADOR',
+                plan = 'PREMIUM',
+                estado = 'ACTIVO',
+                antispam = 0,
+                creditos = CASE WHEN COALESCE(creditos, 0) < 999999 THEN 999999 ELSE creditos END,
+                fecha_caducidad = CASE
+                    WHEN fecha_caducidad IS NULL OR fecha_caducidad = '' OR fecha_caducidad < ?
+                    THEN ?
+                    ELSE fecha_caducidad
+                END
+            """,
+            (admin_id, now_iso(), owner_exp, owner_exp, owner_exp),
+        )
+    conn.commit()
+    conn.close()
+
+
+@schema_initializer
+def init_requests_db():
+    conn = get_conn(REQUESTS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            command TEXT,
+            payload TEXT,
+            status TEXT,
+            admin_msg_id INTEGER,
+            cost INTEGER DEFAULT 1,
+            charged INTEGER DEFAULT 0,
+            delivery_count INTEGER DEFAULT 0,
+            created_at TEXT,
+            resolved_at TEXT,
+            resolved_by INTEGER,
+            resolution_note TEXT,
+            attachment_type TEXT DEFAULT '',
+            attachment_file_id TEXT DEFAULT '',
+            attachment_file_unique_id TEXT DEFAULT '',
+            attachment_file_name TEXT DEFAULT '',
+            attachment_caption TEXT DEFAULT '',
+            origin_chat_id INTEGER,
+            origin_message_id INTEGER,
+            origin_chat_type TEXT DEFAULT '',
+            user_status_chat_id INTEGER,
+            user_status_message_id INTEGER
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(requests)")
+    request_columns = {row[1] for row in cur.fetchall()}
+    for col_name in ("attachment_type", "attachment_file_id", "attachment_file_unique_id", "attachment_file_name", "attachment_caption", "origin_chat_type"):
+        if col_name not in request_columns:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN {col_name} TEXT DEFAULT ''")
+    for col_name in ("origin_chat_id", "origin_message_id"):
+        if col_name not in request_columns:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN {col_name} INTEGER")
+    for col_name in ("user_status_chat_id", "user_status_message_id"):
+        if col_name not in request_columns:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN {col_name} INTEGER")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS request_templates (
+            key TEXT PRIMARY KEY,
+            command TEXT DEFAULT '',
+            text TEXT NOT NULL,
+            billable INTEGER DEFAULT 0
+        )
+        """
+    )
+    cur.execute("PRAGMA table_info(request_templates)")
+    template_columns = {row[1] for row in cur.fetchall()}
+    if "command" not in template_columns:
+        cur.execute("ALTER TABLE request_templates ADD COLUMN command TEXT DEFAULT ''")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS error_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT,
+            method TEXT,
+            message TEXT,
+            traceback TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT,
+            ip TEXT,
+            action TEXT,
+            target TEXT,
+            details TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_audit_event(action: str, target: str = "", details: str = "", actor: str = ""):
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO audit_logs (actor, ip, action, target, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor or session.get("panel_user") or PANEL_USER,
+                request.remote_addr or "",
+                action,
+                target,
+                str(details or "")[:2000],
+                now_iso(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def bot_actor() -> str:
+    actor = str(request_value("actor") or request_value("actor_id") or "").strip()
+    return f"bot:{actor}" if actor else "bot"
+
+
+def log_error_event(exc: Exception):
+    global _ERROR_NOTIFY_TS
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO error_logs (path, method, message, traceback, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                request.path,
+                request.method,
+                str(exc),
+                traceback.format_exc()[-6000:],
+                now_iso(),
+            ),
+        )
+        conn.commit()
+        cutoff = (now_utc() - timedelta(minutes=15)).replace(microsecond=0).isoformat() + "Z"
+        cur.execute("SELECT COUNT(*) FROM error_logs WHERE created_at >= ?", (cutoff,))
+        recent_errors = int(cur.fetchone()[0] or 0)
+        conn.close()
+        now_ts = time.time()
+        if recent_errors >= 3 and now_ts - _ERROR_NOTIFY_TS > 300:
+            _ERROR_NOTIFY_TS = now_ts
+            alert = (
+                f"<b>{html_escape(panel_brand())} ALERTA 500</b>\n\n"
+                f"Errores recientes: <code>{recent_errors}</code> en 15 min\n"
+                f"Ruta: <code>{html_escape(request.path)}</code>\n"
+                f"Mensaje: <code>{html_escape(str(exc)[:500])}</code>"
+            )
+            for admin_id in configured_admin_ids():
+                send_telegram_message_sync(admin_id, alert)
+    except Exception:
+        pass
+
+
+def html_escape(value) -> str:
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def panel_brand(default: str = "NEXORA ONE ⇒") -> str:
+    try:
+        raw = get_panel_setting("BOT_NAME", default)
+    except Exception:
+        raw = default
+    raw = str(raw or default).strip()
+    if raw.upper() in {"#SPIDERSYN", "#SPIDERSYN ⇒", "SPIDERSYN", "SPIDERSYN ⇒"}:
+        raw = default
+    return raw or default
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    if getattr(exc, "code", None) and int(getattr(exc, "code")) < 500:
+        return exc
+    log_error_event(exc)
+    return (
+        "<h1>Internal Server Error</h1>"
+        "<p>The server encountered an internal error and was unable to complete your request.</p>",
+        500,
+    )
+
+
+def get_catalog_categories():
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, slug, name, description, icon, sort_order, is_active
+        FROM command_categories
+        ORDER BY sort_order ASC, name ASC
+        """
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+COMMAND_PLAN_LEVELS = {"FREE": 0, "BASICO": 1, "STANDARD": 2, "PREMIUM": 3}
+COMMAND_PLAN_LABELS = {
+    "FREE": "Libre",
+    "BASICO": "Básico",
+    "STANDARD": "Standard",
+    "PREMIUM": "Premium",
+}
+
+
+def _normalize_command_plan(value: str | None) -> str:
+    raw = (value or "").strip().upper()
+    aliases = {
+        "": "FREE",
+        "NONE": "FREE",
+        "PUBLICO": "FREE",
+        "PÚBLICO": "FREE",
+        "LIBRE": "FREE",
+        "BASIC": "BASICO",
+        "BÁSICO": "BASICO",
+        "STANDAR": "STANDARD",
+        "ESTANDAR": "STANDARD",
+        "ESTÁNDAR": "STANDARD",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in COMMAND_PLAN_LEVELS else "FREE"
+
+
+def _command_plan_label(value: str | None) -> str:
+    return COMMAND_PLAN_LABELS.get(_normalize_command_plan(value), "Libre")
+
+
+def _split_command_payload(raw_description: str | None):
+    raw = (raw_description or "").strip()
+    if not raw.startswith("{"):
+        return raw, {}, "FREE"
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return raw, {}, "FREE"
+    if not isinstance(payload, dict):
+        return raw, {}, "FREE"
+    validation = payload.get("validation")
+    if not isinstance(validation, dict):
+        validation = {}
+    access = payload.get("access")
+    if not isinstance(access, dict):
+        access = {}
+    required_plan = _normalize_command_plan(
+        payload.get("required_plan")
+        or payload.get("min_plan")
+        or access.get("required_plan")
+        or access.get("min_plan")
+    )
+    return str(payload.get("info") or "").strip(), validation, required_plan
+
+
+def _split_command_description(raw_description: str | None):
+    info, validation, _required_plan = _split_command_payload(raw_description)
+    return info, validation
+
+
+def _pack_command_description(info: str | None, validation: dict | None, required_plan: str | None = "FREE"):
+    info = (info or "").strip()
+    clean_validation = {}
+    for key, value in (validation or {}).items():
+        if value is None:
+            continue
+        value = str(value).strip() if not isinstance(value, bool) else value
+        if value == "":
+            continue
+        clean_validation[key] = value
+    required_plan = _normalize_command_plan(required_plan)
+    if not clean_validation and required_plan == "FREE":
+        return info
+    payload = {"info": info}
+    if clean_validation:
+        payload["validation"] = clean_validation
+    if required_plan != "FREE":
+        payload["access"] = {"min_plan": required_plan}
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _command_required_plan_from_form():
+    return _normalize_command_plan(request.form.get("required_plan") or request.form.get("min_plan"))
+
+
+def _command_validation_from_form():
+    validation_type = (request.form.get("validation_type") or "none").strip().lower()
+    allowed_types = {"none", "digits", "number", "letters", "dni", "regex", "photo", "photo_text", "media", "media_text"}
+    if validation_type not in allowed_types:
+        validation_type = "none"
+    validation = {"type": validation_type}
+    for form_key, meta_key in (
+        ("validation_length", "length"),
+        ("validation_min_length", "min_length"),
+        ("validation_max_length", "max_length"),
+        ("validation_regex", "regex"),
+        ("validation_empty_message", "empty_message"),
+        ("validation_invalid_message", "invalid_message"),
+    ):
+        value = (request.form.get(form_key) or "").strip()
+        if value:
+            validation[meta_key] = value
+    if validation_type == "none" and len(validation) == 1:
+        return {}
+    return validation
+
+
+def _validation_label(validation_type: str | None):
+    labels = {
+        "none": "Sin validación",
+        "dni": "DNI",
+        "digits": "Números",
+        "number": "Números",
+        "letters": "Letras",
+        "regex": "Regex",
+        "photo": "Foto/archivo",
+        "media": "Foto/archivo",
+        "photo_text": "Foto + texto",
+        "media_text": "Foto + texto",
+    }
+    return labels.get((validation_type or "none").strip().lower(), validation_type or "Sin validación")
+
+
+def _hydrate_command_row(row: dict):
+    raw_description = row.get("description") or ""
+    description, validation, required_plan = _split_command_payload(raw_description)
+    row["raw_description"] = raw_description
+    row["description"] = description
+    row["validation"] = validation
+    row["required_plan"] = required_plan
+    row["required_plan_label"] = _command_plan_label(required_plan)
+    row["validation_type"] = validation.get("type") or "none"
+    row["validation_length"] = validation.get("length") or ""
+    row["validation_min_length"] = validation.get("min_length") or ""
+    row["validation_max_length"] = validation.get("max_length") or ""
+    row["validation_regex"] = validation.get("regex") or ""
+    row["validation_empty_message"] = validation.get("empty_message") or ""
+    row["validation_invalid_message"] = validation.get("invalid_message") or ""
+    row["validation_label"] = _validation_label(row["validation_type"])
+    return row
+
+
+def get_catalog_commands():
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.slug, c.name, c.description, c.cost, c.is_active, c.sort_order, c.usage_hint,
+               cat.id AS category_id, cat.slug AS category_slug, cat.name AS category_name
+        FROM command_catalog c
+        LEFT JOIN command_categories cat ON cat.id = c.category_id
+        ORDER BY COALESCE(cat.sort_order, 9999), COALESCE(cat.name, 'ZZZ'), c.sort_order ASC, c.name ASC
+        """
+    )
+    rows = [_hydrate_command_row(dict(row)) for row in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_command_config_value(slug: str, default_cost: int = 1):
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.slug, c.name, c.cost, c.is_active, c.description, c.usage_hint,
+               cat.slug AS category_slug, cat.name AS category_name
+        FROM command_catalog c
+        LEFT JOIN command_categories cat ON cat.id = c.category_id
+        WHERE c.slug = ?
+        """,
+        (slug,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {
+            "exists": False,
+            "slug": slug,
+            "name": slug.upper(),
+            "cost": int(default_cost),
+            "is_active": True,
+            "category_slug": None,
+            "category_name": None,
+            "description": "",
+            "usage_hint": "",
+            "validation": {},
+            "required_plan": "FREE",
+            "required_plan_label": _command_plan_label("FREE"),
+        }
+    description, validation, required_plan = _split_command_payload(row["description"] or "")
+    return {
+        "exists": True,
+        "slug": row["slug"],
+        "name": row["name"],
+        "cost": int(row["cost"] or default_cost),
+        "is_active": bool(row["is_active"]),
+        "category_slug": row["category_slug"],
+        "category_name": row["category_name"],
+        "description": description,
+        "raw_description": row["description"] or "",
+        "usage_hint": row["usage_hint"] or "",
+        "validation": validation,
+        "required_plan": required_plan,
+        "required_plan_label": _command_plan_label(required_plan),
+    }
+
+
+def get_buy_packages():
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active
+        FROM buy_packages
+        ORDER BY kind ASC, sort_order ASC, id ASC
+        """
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_buy_packages_grouped(active_only: bool = True):
+    rows = get_buy_packages()
+    grouped = {"credits": [], "days": []}
+    seen = {}
+    for row in rows:
+        if active_only and not row["is_active"]:
+            continue
+        key = (row["kind"], row["group_slug"])
+        if key not in seen:
+            entry = {
+                "group_slug": row["group_slug"],
+                "badge": row["badge"],
+                "title": row["title"],
+                "subtitle": row["subtitle"],
+                "items": [],
+            }
+            seen[key] = entry
+            grouped[row["kind"]].append(entry)
+        seen[key]["items"].append(row["line_text"])
+    return grouped
+
+
+def get_panel_settings():
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        )
+        """
+    )
+    cur.execute("SELECT key, value FROM panel_settings ORDER BY key ASC")
+    rows = {row["key"]: row["value"] for row in cur.fetchall()}
+    conn.close()
+    return rows
+
+
+def get_panel_setting(key: str, default: str = "") -> str:
+    try:
+        return str(get_panel_settings().get(key, default) or default)
+    except Exception:
+        return default
+
+
+def save_panel_setting_value(key: str, value: str):
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO panel_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def verify_panel_password(password: str) -> bool:
+    stored_hash = get_panel_setting("PANEL_PASSWORD_HASH", "")
+    if stored_hash:
+        try:
+            return check_password_hash(stored_hash, password)
+        except Exception:
+            return False
+    if not PANEL_PASSWORD:
+        return False
+    return secrets.compare_digest(password, PANEL_PASSWORD)
+
+
+def filter_catalog_commands(commands: list[dict], q: str = "", category: str = "", status: str = ""):
+    q = (q or "").strip().lower()
+    category = (category or "").strip().lower()
+    status = (status or "").strip().lower()
+    result = []
+    for cmd in commands:
+        if q:
+            hay = " ".join([
+                str(cmd.get("slug") or ""),
+                str(cmd.get("name") or ""),
+                str(cmd.get("description") or ""),
+                str(cmd.get("usage_hint") or ""),
+            ]).lower()
+            if q not in hay:
+                continue
+        if category and (cmd.get("category_slug") or "").lower() != category:
+            continue
+        if status == "active" and not cmd.get("is_active"):
+            continue
+        if status == "inactive" and cmd.get("is_active"):
+            continue
+        result.append(cmd)
+    return result
+
+
+def parse_bulk_command_rows(raw_text: str):
+    rows = []
+    errors = []
+    for idx, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split(";;")]
+        if len(parts) < 5:
+            errors.append(
+                f"Línea {idx}: formato inválido. Usa slug;;nombre;;costo;;usage_hint;;info"
+            )
+            continue
+        slug, name, cost_raw, usage_hint, description = parts[:5]
+        status_raw = parts[5].strip().lower() if len(parts) >= 6 else "1"
+        order_raw = parts[6].strip() if len(parts) >= 7 else "0"
+        validation_type = parts[7].strip().lower() if len(parts) >= 8 else "none"
+        validation_length = parts[8].strip() if len(parts) >= 9 else ""
+        validation_regex = parts[9].strip() if len(parts) >= 10 else ""
+        validation_empty = parts[10].strip() if len(parts) >= 11 else ""
+        validation_invalid = parts[11].strip() if len(parts) >= 12 else ""
+        required_plan = _normalize_command_plan(parts[12].strip() if len(parts) >= 13 else "FREE")
+        if not slug or not name:
+            errors.append(f"Línea {idx}: slug y nombre son obligatorios")
+            continue
+        try:
+            cost = max(0, int(cost_raw))
+        except Exception:
+            errors.append(f"Línea {idx}: costo inválido '{cost_raw}'")
+            continue
+        is_active = 0 if status_raw in {"0", "off", "inactive", "inactivo"} else 1
+        try:
+            sort_order = int(order_raw or 0)
+        except Exception:
+            errors.append(f"Línea {idx}: orden inválido '{order_raw}'")
+            continue
+        validation = {}
+        if validation_type and validation_type != "none":
+            allowed_types = {"digits", "number", "letters", "dni", "regex", "photo", "photo_text", "media", "media_text"}
+            if validation_type not in allowed_types:
+                errors.append(f"Línea {idx}: validación inválida '{validation_type}'")
+                continue
+            validation["type"] = validation_type
+        if validation_length:
+            validation["length"] = validation_length
+        if validation_regex:
+            validation["regex"] = validation_regex
+        if validation_empty:
+            validation["empty_message"] = validation_empty
+        if validation_invalid:
+            validation["invalid_message"] = validation_invalid
+        rows.append(
+            {
+                "slug": slug.lower(),
+                "name": name,
+                "cost": cost,
+                "usage_hint": usage_hint,
+                "description": _pack_command_description(description, validation, required_plan),
+                "is_active": is_active,
+                "sort_order": sort_order,
+            }
+        )
+    return rows, errors
+
+
+def build_panel_previews(settings: dict, buy_packages: list[dict], commands: list[dict]):
+    owner = settings.get("BT_OWNER") or "OWNER"
+    canal = settings.get("BT_CANAL") or "CANAL"
+    grupo = settings.get("BT_GRUPO") or "GRUPO"
+    owner_link = settings.get("OWNER_LINK") or "https://t.me/owner"
+    grupo_link = settings.get("GRUPO_LINK") or "https://t.me/grupo"
+    canal_link = settings.get("CANAL_LINK") or "https://t.me/canal"
+    preview_start = (
+        "👋 Hola, Usuario\n\n"
+        "Comandos principales:\n/register\n/cmds\n/me\n/buy\n\n"
+        f"Botones:\n[{grupo}] {grupo_link}\n[{canal}] {canal_link}\n[{owner}] {owner_link}"
+    )
+
+    grouped = get_buy_packages_grouped(active_only=True)
+    buy_lines = []
+    for kind in ("credits", "days"):
+        for group in grouped[kind][:2]:
+            buy_lines.append(f"{group['badge']} {group['title']} ({group['subtitle']})")
+            buy_lines.extend(group["items"][:2])
+    preview_buy = "✨ PLANES Y TARIFAS ✨\n\n" + ("\n".join(buy_lines[:8]) or "Sin paquetes activos.")
+
+    active_commands = [c for c in commands if c.get("is_active")]
+    sample = []
+    for cmd in active_commands[:6]:
+        sample.append(f"/{cmd['slug']} · {cmd['cost']} cr · {cmd.get('category_name') or 'Sin categoría'}")
+    preview_cmds = "Menu principal de comandos\n\n" + ("\n".join(sample) or "Sin comandos activos.")
+    return {
+        "start": preview_start,
+        "buy": preview_buy,
+        "cmds": preview_cmds,
+    }
+
+
+def paginate_items(items: list[dict], page: int, per_page: int = 12):
+    total = len(items)
+    total_pages = max(1, math.ceil(total / per_page)) if total else 1
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    return items[start:end], page, total_pages, total
+
+
+def get_dashboard_snapshot(vendor_id: str = ""):
+    vendor_id = (vendor_id or "").strip()
+    now = now_utc()
+    cutoffs = {
+        "today": now.replace(hour=0, minute=0, second=0, microsecond=0),
+        "last_7": now - timedelta(days=7),
+        "last_30": now - timedelta(days=30),
+    }
+    cutoff_iso = {key: value.isoformat() + "Z" for key, value in cutoffs.items()}
+    data = {
+        "usuarios": 0,
+        "consultas": 0,
+        "pendientes": 0,
+        "ventas": 0,
+        "periods": {
+            "today": {"label": "Hoy", "consultas": 0, "ventas": 0, "solicitudes": 0},
+            "last_7": {"label": "7 dias", "consultas": 0, "ventas": 0, "solicitudes": 0},
+            "last_30": {"label": "30 dias", "consultas": 0, "ventas": 0, "solicitudes": 0},
+        },
+        "top_comandos": [],
+        "top_usuarios": [],
+        "top_vendedores": [],
+        "consultas_por_dia": [],
+        "ventas_por_dia": [],
+        "ventas_por_periodo": [],
+        "ventas_por_tipo": [],
+        "usuarios_por_plan": [],
+        "usuarios_por_estado": [],
+        "solicitudes_por_estado": [],
+    }
+    try:
+        conn = get_conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM usuarios")
+        data["usuarios"] = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(plan), ''), 'SIN PLAN') plan, COUNT(*) total
+            FROM usuarios
+            GROUP BY COALESCE(NULLIF(TRIM(plan), ''), 'SIN PLAN')
+            ORDER BY total DESC
+            LIMIT 10
+            """
+        )
+        data["usuarios_por_plan"] = [{"plan": r[0], "total": r[1]} for r in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(estado), ''), 'SIN ESTADO') estado, COUNT(*) total
+            FROM usuarios
+            GROUP BY COALESCE(NULLIF(TRIM(estado), ''), 'SIN ESTADO')
+            ORDER BY total DESC
+            """
+        )
+        data["usuarios_por_estado"] = [{"estado": r[0], "total": r[1]} for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(HIST_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM historial")
+        data["consultas"] = cur.fetchone()[0]
+        for key, start in cutoff_iso.items():
+            cur.execute("SELECT COUNT(*) FROM historial WHERE fecha >= ?", (start,))
+            data["periods"][key]["consultas"] = cur.fetchone()[0]
+        cur.execute("SELECT consulta, COUNT(*) total FROM historial GROUP BY consulta ORDER BY total DESC LIMIT 10")
+        data["top_comandos"] = [{"consulta": r[0], "total": r[1]} for r in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT ID_TG, COUNT(*) total
+            FROM historial
+            GROUP BY ID_TG
+            ORDER BY total DESC
+            LIMIT 10
+            """
+        )
+        data["top_usuarios"] = [{"id_tg": r[0], "total": r[1]} for r in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT substr(fecha, 1, 10) dia, COUNT(*) total
+            FROM historial
+            WHERE fecha >= ?
+            GROUP BY substr(fecha, 1, 10)
+            ORDER BY dia DESC
+            LIMIT 14
+            """,
+            (cutoff_iso["last_30"],),
+        )
+        data["consultas_por_dia"] = [{"dia": r[0], "total": r[1]} for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM requests WHERE status = 'pending'")
+        data["pendientes"] = cur.fetchone()[0]
+        for key, start in cutoff_iso.items():
+            cur.execute("SELECT COUNT(*) FROM requests WHERE created_at >= ?", (start,))
+            data["periods"][key]["solicitudes"] = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(status), ''), 'sin estado') status, COUNT(*) total
+            FROM requests
+            GROUP BY COALESCE(NULLIF(TRIM(status), ''), 'sin estado')
+            ORDER BY total DESC
+            """
+        )
+        data["solicitudes_por_estado"] = [{"status": r[0], "total": r[1]} for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(COMPRAS_DB_PATH)
+        cur = conn.cursor()
+        if vendor_id:
+            cur.execute("SELECT COUNT(*) FROM compras WHERE VENDEDOR = ?", (vendor_id,))
+        else:
+            cur.execute("SELECT COUNT(*) FROM compras")
+        data["ventas"] = cur.fetchone()[0]
+        for key, start in cutoff_iso.items():
+            if vendor_id:
+                cur.execute("SELECT COUNT(*) FROM compras WHERE FECHA >= ? AND VENDEDOR = ?", (start, vendor_id))
+            else:
+                cur.execute("SELECT COUNT(*) FROM compras WHERE FECHA >= ?", (start,))
+            data["periods"][key]["ventas"] = cur.fetchone()[0]
+            period_where = "WHERE FECHA >= ?"
+            period_params = [start]
+            if vendor_id:
+                period_where += " AND VENDEDOR = ?"
+                period_params.append(vendor_id)
+            cur.execute(
+                f"""
+                SELECT COUNT(*) total,
+                       SUM(CASE WHEN UPPER(COMPRO) LIKE '%CRED%' OR UPPER(COMPRO) LIKE '%KEY:CREDITOS%' THEN 1 ELSE 0 END) creditos,
+                       SUM(CASE WHEN UPPER(COMPRO) LIKE '%DIA%' OR UPPER(COMPRO) LIKE '%KEY:DIAS%' THEN 1 ELSE 0 END) dias
+                FROM compras
+                {period_where}
+                """,
+                tuple(period_params),
+            )
+            r = cur.fetchone()
+            data["ventas_por_periodo"].append({
+                "label": data["periods"][key]["label"],
+                "total": int(r[0] or 0),
+                "creditos": int(r[1] or 0),
+                "dias": int(r[2] or 0),
+            })
+        purchase_where = "WHERE VENDEDOR = ?" if vendor_id else ""
+        purchase_params = (vendor_id,) if vendor_id else ()
+        cur.execute(
+            f"""
+            SELECT
+                SUM(CASE WHEN UPPER(COMPRO) LIKE '%CRED%' OR UPPER(COMPRO) LIKE '%KEY:CREDITOS%' THEN 1 ELSE 0 END) creditos,
+                SUM(CASE WHEN UPPER(COMPRO) LIKE '%DIA%' OR UPPER(COMPRO) LIKE '%KEY:DIAS%' THEN 1 ELSE 0 END) dias,
+                SUM(CASE WHEN UPPER(COMPRO) LIKE 'KEY:%' THEN 1 ELSE 0 END) keys,
+                COUNT(*) total
+            FROM compras
+            {purchase_where}
+            """
+            ,
+            purchase_params,
+        )
+        r = cur.fetchone()
+        total = int(r[3] or 0)
+        data["ventas_por_tipo"] = [
+            {"tipo": "Créditos", "total": int(r[0] or 0)},
+            {"tipo": "Días", "total": int(r[1] or 0)},
+            {"tipo": "Keys", "total": int(r[2] or 0)},
+            {"tipo": "Otros", "total": max(0, total - int(r[0] or 0) - int(r[1] or 0))},
+        ]
+        cur.execute(
+            f"""
+            SELECT COALESCE(NULLIF(TRIM(VENDEDOR), ''), 'SIN VENDEDOR') vendedor, COUNT(*) total
+            FROM compras
+            {purchase_where}
+            GROUP BY COALESCE(NULLIF(TRIM(VENDEDOR), ''), 'SIN VENDEDOR')
+            ORDER BY total DESC
+            LIMIT 10
+            """
+            ,
+            purchase_params,
+        )
+        data["top_vendedores"] = [{"vendedor": r[0], "total": r[1]} for r in cur.fetchall()]
+        day_where = "WHERE FECHA >= ?"
+        day_params = [cutoff_iso["last_30"]]
+        if vendor_id:
+            day_where += " AND VENDEDOR = ?"
+            day_params.append(vendor_id)
+        cur.execute(
+            f"""
+            SELECT substr(FECHA, 1, 10) dia, COUNT(*) total
+            FROM compras
+            {day_where}
+            GROUP BY substr(FECHA, 1, 10)
+            ORDER BY dia DESC
+            LIMIT 14
+            """,
+            tuple(day_params),
+        )
+        data["ventas_por_dia"] = [{"dia": r[0], "total": r[1]} for r in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    return data
+
+
+def get_request_items(status: str | None = None, limit: int = 50):
+    items = []
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        if status:
+            cur.execute(
+                """
+                SELECT id, user_id, username, command, payload, status, admin_msg_id, cost,
+                       created_at, resolved_at, resolved_by, resolution_note,
+                       attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption
+                FROM requests
+                WHERE status = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, user_id, username, command, payload, status, admin_msg_id, cost,
+                       created_at, resolved_at, resolved_by, resolution_note,
+                       attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption
+                FROM requests
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        items = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        items = []
+    return items
+
+
+def get_request_items_filtered(
+    q: str = "",
+    status: str = "",
+    command: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    limit: int = 500,
+):
+    q = (q or "").strip().lower()
+    status = (status or "").strip().lower()
+    command = (command or "").strip().lower()
+    date_from = (date_from or "").strip()
+    date_to = (date_to or "").strip()
+    clauses = []
+    params = []
+    if status:
+        clauses.append("LOWER(COALESCE(status, '')) = ?")
+        params.append(status)
+    if command:
+        clauses.append("LOWER(COALESCE(command, '')) = ?")
+        params.append(command)
+    if date_from:
+        clauses.append("created_at >= ?")
+        params.append(f"{date_from}T00:00:00Z")
+    if date_to:
+        clauses.append("created_at <= ?")
+        params.append(f"{date_to}T23:59:59Z")
+    if q:
+        clauses.append(
+            """
+            (
+                LOWER(CAST(id AS TEXT)) LIKE ?
+                OR LOWER(CAST(user_id AS TEXT)) LIKE ?
+                OR LOWER(COALESCE(username, '')) LIKE ?
+                OR LOWER(COALESCE(command, '')) LIKE ?
+                OR LOWER(COALESCE(payload, '')) LIKE ?
+                OR LOWER(COALESCE(status, '')) LIKE ?
+                OR LOWER(COALESCE(resolution_note, '')) LIKE ?
+            )
+            """
+        )
+        like = f"%{q}%"
+        params.extend([like, like, like, like, like, like, like])
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, user_id, username, command, payload, status, admin_msg_id, cost,
+                   created_at, resolved_at, resolved_by, resolution_note,
+                   attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption
+            FROM requests
+            {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def get_request_templates():
+    items = []
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT key, COALESCE(command, '') AS command, text, billable FROM request_templates ORDER BY COALESCE(command, ''), key")
+        items = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        items = []
+    return items
+
+
+def get_request_template_by_key(key: str):
+    key = (key or "").strip().lower()
+    if not key:
+        return None
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT key, COALESCE(command, '') AS command, text, billable FROM request_templates WHERE key = ?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def send_request_template_from_panel(request_id: int, template_key: str, resolve: bool = False) -> tuple[bool, str]:
+    template = get_request_template_by_key(template_key)
+    if not template:
+        return False, "Plantilla no encontrada."
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT id, user_id, command, status FROM requests WHERE id = ?", (request_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return False, f"Solicitud #{request_id} no encontrada."
+        if (row[3] or "") != "pending":
+            conn.close()
+            return False, f"Solicitud #{request_id} no está pendiente."
+        text = str(template.get("text") or "").strip()
+        user_text = (
+            f"<b>{html_escape(panel_brand())} RESPUESTA A SOLICITUD #{request_id}</b>\n\n"
+            f"Comando: <code>/{html_escape(row[2] or '')}</code>\n\n"
+            f"{html_escape(text)}"
+        )
+        sent = send_telegram_message_sync(row[1], user_text)
+        if not sent:
+            conn.close()
+            return False, "No se pudo enviar el mensaje al usuario."
+        note = f"[template:{template_key}] {text}"
+        if resolve:
+            cur.execute(
+                """
+                UPDATE requests
+                SET status = 'resolved',
+                    delivery_count = COALESCE(delivery_count, 0) + 1,
+                    resolved_at = ?,
+                    resolved_by = ?,
+                    resolution_note = ?
+                WHERE id = ?
+                """,
+                (now_iso(), session.get("panel_user") or PANEL_USER, note, request_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE requests
+                SET delivery_count = COALESCE(delivery_count, 0) + 1,
+                    resolution_note = ?
+                WHERE id = ?
+                """,
+                (note, request_id),
+            )
+        conn.commit()
+        conn.close()
+        log_audit_event("request.template", str(request_id), f"template={template_key}; resolve={resolve}")
+        suffix = " y solicitud resuelta" if resolve else ""
+        return True, f"Plantilla {template_key} enviada{suffix} para solicitud #{request_id}."
+    except Exception as exc:
+        log_error_event(exc)
+        return False, f"No se pudo enviar la plantilla a solicitud #{request_id}."
+
+
+def get_user_key_redemptions(user_id: str, limit: int = 80):
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return []
+    try:
+        init_keys_db()
+        conn = get_conn(KEYS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT r.id, r.key, r.user_id, r.fecha_canje,
+                   k.tipo, k.cantidad, k.usos, k.creador_id, k.fecha_creacion
+            FROM redemptions r
+            LEFT JOIN keys k ON k.key = r.key
+            WHERE CAST(r.user_id AS TEXT) = ?
+            ORDER BY r.id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def get_user_activity(user_id: str, limit: int = 60):
+    activity = []
+    for row in get_admin_purchases(user_id=user_id, limit=30):
+        activity.append({
+            "type": "Compra",
+            "label": row.get("COMPRO") or "—",
+            "detail": f"Vendedor: {row.get('VENDEDOR') or '—'} · Estado: {row.get('ESTADO') or 'ENTREGADA'}",
+            "date": row.get("FECHA") or "",
+        })
+    for row in get_admin_history(user_id=user_id, limit=30):
+        activity.append({
+            "type": "Consulta",
+            "label": f"/{row.get('consulta') or '—'}",
+            "detail": row.get("valor") or "—",
+            "date": row.get("fecha") or "",
+        })
+    for row in get_user_key_redemptions(user_id, limit=30):
+        activity.append({
+            "type": "Key",
+            "label": row.get("key") or "—",
+            "detail": f"{row.get('tipo') or '—'} · {row.get('cantidad') or 0}",
+            "date": row.get("fecha_canje") or "",
+        })
+    for row in get_user_request_items(user_id, limit=30):
+        activity.append({
+            "type": "Solicitud",
+            "label": f"#{row.get('id')} /{row.get('command') or '—'}",
+            "detail": f"{row.get('status') or '—'} · {row.get('resolution_note') or row.get('payload') or '—'}",
+            "date": row.get("resolved_at") or row.get("created_at") or "",
+        })
+    activity.sort(key=lambda item: item.get("date") or "", reverse=True)
+    return activity[:limit]
+
+
+def get_key_items(q: str = "", tipo: str = "", status: str = "", limit: int = 200):
+    q = (q or "").strip().upper()
+    tipo = (tipo or "").strip().lower()
+    status = (status or "").strip().lower()
+    items = []
+    try:
+        init_keys_db()
+        conn = get_conn(KEYS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        clauses = []
+        params = []
+        if q:
+            clauses.append("(k.key LIKE ? OR CAST(k.creador_id AS TEXT) LIKE ?)")
+            params.extend([f"%{q}%", f"%{q}%"])
+        if tipo in {"dias", "creditos"}:
+            clauses.append("k.tipo = ?")
+            params.append(tipo)
+        if status == "available":
+            clauses.append("k.usos > 0")
+        elif status == "used":
+            clauses.append("k.usos <= 0")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        cur.execute(
+            f"""
+            SELECT k.key, k.tipo, k.cantidad, k.usos, k.creador_id, k.fecha_creacion,
+                   COUNT(r.id) AS canjes
+            FROM keys k
+            LEFT JOIN redemptions r ON r.key = k.key
+            {where}
+            GROUP BY k.key, k.tipo, k.cantidad, k.usos, k.creador_id, k.fecha_creacion
+            ORDER BY k.fecha_creacion DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        items = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        items = []
+    return items
+
+
+def get_key_redemptions(limit: int = 80):
+    try:
+        init_keys_db()
+        conn = get_conn(KEYS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT r.key, r.user_id, r.fecha_canje, k.tipo, k.cantidad
+            FROM redemptions r
+            JOIN keys k ON r.key = k.key
+            ORDER BY r.fecha_canje DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def update_key_uses(key: str, usos: int) -> bool:
+    init_keys_db()
+    conn = get_conn(KEYS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE keys SET usos = ? WHERE key = ?", (usos, key))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def filter_request_items(items: list[dict], q: str = "", status: str = "", command: str = ""):
+    q = (q or "").strip().lower()
+    status = (status or "").strip().lower()
+    command = (command or "").strip().lower()
+    out = []
+    for item in items:
+        if status and (item.get("status") or "").lower() != status:
+            continue
+        if command and (item.get("command") or "").lower() != command:
+            continue
+        if q:
+            hay = " ".join(
+                [
+                    str(item.get("id") or ""),
+                    str(item.get("user_id") or ""),
+                    str(item.get("username") or ""),
+                    str(item.get("command") or ""),
+                    str(item.get("payload") or ""),
+                    str(item.get("resolution_note") or ""),
+                ]
+            ).lower()
+            if q not in hay:
+                continue
+        out.append(item)
+    return out
+
+
+REQUEST_PANEL_ACTIONS = {
+    "resolve": ("resolved", "Solicitud resuelta desde panel."),
+    "close": ("cancelled", "Solicitud cerrada desde panel."),
+    "fail": ("failed", "Solicitud marcada fallida desde panel."),
+    "reopen": ("pending", "Solicitud reabierta desde panel."),
+}
+
+
+def update_request_status_from_panel(request_id: int, action: str, note: str = "") -> tuple[bool, str]:
+    action = (action or "").strip().lower()
+    if action not in REQUEST_PANEL_ACTIONS:
+        return False, "Acción inválida."
+    new_status, default_note = REQUEST_PANEL_ACTIONS[action]
+    note = (note or "").strip() or default_note
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT id, user_id, command, status FROM requests WHERE id = ?", (request_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return False, f"Solicitud #{request_id} no encontrada."
+        resolved_at = None if new_status == "pending" else now_iso()
+        resolved_by = "" if new_status == "pending" else (session.get("panel_user") or PANEL_USER)
+        if new_status == "pending":
+            note = ""
+        cur.execute(
+            """
+            UPDATE requests
+            SET status = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
+            WHERE id = ?
+            """,
+            (new_status, resolved_at, resolved_by, note, request_id),
+        )
+        conn.commit()
+        conn.close()
+        log_audit_event("request.action", str(request_id), f"{action} => {new_status}; note={note}")
+        if new_status != "pending" and row[1]:
+            labels = {
+                "resolved": "resuelta",
+                "cancelled": "cerrada",
+                "failed": "marcada como fallida",
+            }
+            user_text = (
+                f"<b>{html_escape(panel_brand())} SOLICITUD ACTUALIZADA</b>\n\n"
+                f"Solicitud: <code>#{request_id}</code>\n"
+                f"Comando: <code>/{html_escape(row[2] or '')}</code>\n"
+                f"Estado: <code>{html_escape(labels.get(new_status, new_status))}</code>\n"
+                f"Nota: {html_escape(note) if note else '—'}"
+            )
+            send_telegram_message_sync(row[1], user_text)
+        return True, f"Solicitud #{request_id} actualizada a {new_status}."
+    except Exception as exc:
+        log_error_event(exc)
+        return False, f"No se pudo actualizar la solicitud #{request_id}."
+
+
+@app.route("/admin/request/<int:request_id>/attachment", methods=["GET"])
+def admin_request_attachment(request_id: int):
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    if not TELEGRAM_TOKEN:
+        return redirect(url_for("admin_panel", section="solicitudes", flash="TOKEN_BOT no disponible para abrir adjuntos."))
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT attachment_file_id, attachment_file_name, attachment_type
+            FROM requests
+            WHERE id = ?
+            """,
+            (request_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row or not (row["attachment_file_id"] or "").strip():
+            return redirect(url_for("admin_panel", section="solicitudes", flash=f"Solicitud #{request_id} no tiene adjunto."))
+        get_file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={_urlparse.quote(row['attachment_file_id'])}"
+        with _urlreq.urlopen(get_file_url, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        file_path = ((payload.get("result") or {}).get("file_path") or "").strip()
+        if not file_path:
+            return redirect(url_for("admin_panel", section="solicitudes", flash="Telegram no devolvió ruta del adjunto."))
+        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        with _urlreq.urlopen(file_url, timeout=30) as resp:
+            body = resp.read()
+            content_type = resp.headers.get("Content-Type") or "application/octet-stream"
+        filename = (row["attachment_file_name"] or os.path.basename(file_path) or f"solicitud-{request_id}.bin").replace('"', "")
+        log_audit_event("request.attachment", str(request_id), filename)
+        return Response(
+            body,
+            mimetype=content_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+    except Exception as exc:
+        log_error_event(exc)
+        return redirect(url_for("admin_panel", section="solicitudes", flash=f"No se pudo abrir el adjunto de #{request_id}."))
+
+
+def get_admin_users(q: str = "", status: str = "", plan: str = "", limit: int = 200):
+    q = (q or "").strip().lower()
+    status = (status or "").strip().upper()
+    plan = (plan or "").strip().upper()
+    items = []
+    try:
+        conn = get_conn(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id_tg, rol_tg, creditos, plan, estado, fecha_caducidad, antispam,
+                   register_web, register_wsp, user_web, number_wsp
+            FROM usuarios
+            ORDER BY id_tg DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        rows = []
+    for row in rows:
+        if q:
+            hay = " ".join(
+                [
+                    str(row.get("id_tg") or ""),
+                    str(row.get("rol_tg") or ""),
+                    str(row.get("user_web") or ""),
+                    str(row.get("number_wsp") or ""),
+                    str(row.get("plan") or ""),
+                    str(row.get("estado") or ""),
+                ]
+            ).lower()
+            if q not in hay:
+                continue
+        if status and (row.get("estado") or "").upper() != status:
+            continue
+        if plan and (row.get("plan") or "").upper() != plan:
+            continue
+        items.append(row)
+    return items
+
+
+def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = ""):
+    q = (q or "").strip().lower()
+    vendor_id = (vendor_id or "").strip()
+    items = []
+    try:
+        conn = get_conn(COMPRAS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        where = "WHERE VENDEDOR IS NOT NULL AND TRIM(VENDEDOR) != ''"
+        params = []
+        if vendor_id:
+            where += " AND VENDEDOR = ?"
+            params.append(vendor_id)
+        cur.execute(
+            f"""
+            SELECT VENDEDOR, COUNT(*) AS total_ventas, MAX(FECHA) AS ultima_venta
+            FROM compras
+            {where}
+            GROUP BY VENDEDOR
+            ORDER BY total_ventas DESC, ultima_venta DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        rows = []
+    for row in rows:
+        vendedor = str(row.get("VENDEDOR") or "").strip()
+        if q and q not in vendedor.lower():
+            continue
+        items.append(
+            {
+                "vendedor": vendedor,
+                "total_ventas": int(row.get("total_ventas") or 0),
+                "ultima_venta": row.get("ultima_venta") or "",
+            }
+        )
+    return items
+
+
+def get_vendor_sales_detail(vendedor_id: str, limit: int = 100):
+    vendedor_id = (vendedor_id or "").strip()
+    if not vendedor_id:
+        return []
+    try:
+        conn = get_conn(COMPRAS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO
+            FROM compras
+            WHERE VENDEDOR = ?
+            ORDER BY FECHA DESC, ID DESC
+            LIMIT ?
+            """,
+            (vendedor_id, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _date_bounds(date_from: str = "", date_to: str = ""):
+    start = (date_from or "").strip()
+    end = (date_to or "").strip()
+    start_iso = f"{start}T00:00:00" if start else ""
+    end_iso = f"{end}T23:59:59" if end else ""
+    return start_iso, end_iso
+
+
+PURCHASE_STATUSES = {"PENDIENTE", "PAGADA", "ENTREGADA", "CANCELADA"}
+PANEL_ROLES = {"FUNDADOR", "CO-FUNDADOR", "SELLER", "SOPORTE"}
+VISUAL_IMAGE_KEYS = {"FT_BUY", "FT_CMDS", "FT_CMDSADMIN", "FT_START"}
+ALLOWED_VISUAL_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+PANEL_SECTION_ACCESS = {
+    "resumen": PANEL_ROLES,
+    "buscar": PANEL_ROLES,
+    "compras": {"FUNDADOR", "CO-FUNDADOR", "SELLER"},
+    "vendedores": {"FUNDADOR", "CO-FUNDADOR", "SELLER"},
+    "estadisticas": {"FUNDADOR", "CO-FUNDADOR", "SELLER"},
+    "usuarios": {"FUNDADOR", "CO-FUNDADOR", "SOPORTE"},
+    "usuario": {"FUNDADOR", "CO-FUNDADOR", "SELLER", "SOPORTE"},
+    "historial": {"FUNDADOR", "CO-FUNDADOR", "SOPORTE"},
+    "solicitudes": {"FUNDADOR", "CO-FUNDADOR", "SOPORTE"},
+    "keys": {"FUNDADOR", "CO-FUNDADOR"},
+    "categorias": {"FUNDADOR", "CO-FUNDADOR"},
+    "comandos": {"FUNDADOR", "CO-FUNDADOR"},
+    "buy": {"FUNDADOR", "CO-FUNDADOR"},
+    "ajustes": {"FUNDADOR", "CO-FUNDADOR"},
+    "herramientas": {"FUNDADOR", "CO-FUNDADOR"},
+    "sistema": {"FUNDADOR"},
+}
+PANEL_NAV_ITEMS = [
+    ("resumen", "Resumen"),
+    ("buscar", "Buscar"),
+    ("categorias", "Categorías"),
+    ("comandos", "Comandos"),
+    ("buy", "Paquetes /buy"),
+    ("usuarios", "Usuarios"),
+    ("compras", "Compras"),
+    ("historial", "Historial"),
+    ("vendedores", "Vendedores"),
+    ("ajustes", "Ajustes Visuales"),
+    ("solicitudes", "Solicitudes"),
+    ("keys", "Keys"),
+    ("herramientas", "Herramientas"),
+    ("sistema", "Sistema"),
+    ("estadisticas", "Estadísticas"),
+]
+
+
+def get_admin_purchases(user_id: str = "", vendor_id: str = "", date_from: str = "", date_to: str = "", kind: str = "", status: str = "", limit: int = 300, exact_vendor: bool = False):
+    clauses = []
+    params = []
+    user_id = (user_id or "").strip()
+    vendor_id = (vendor_id or "").strip()
+    kind = (kind or "").strip().lower()
+    status = (status or "").strip().upper()
+    start_iso, end_iso = _date_bounds(date_from, date_to)
+    if user_id:
+        clauses.append("ID_TG LIKE ?")
+        params.append(f"%{user_id}%")
+    if vendor_id:
+        clauses.append("VENDEDOR = ?" if exact_vendor else "VENDEDOR LIKE ?")
+        params.append(vendor_id if exact_vendor else f"%{vendor_id}%")
+    if start_iso:
+        clauses.append("FECHA >= ?")
+        params.append(start_iso)
+    if end_iso:
+        clauses.append("FECHA <= ?")
+        params.append(end_iso)
+    if kind == "credits":
+        clauses.append("UPPER(COMPRO) LIKE '%CREDIT%'")
+    elif kind == "days":
+        clauses.append("(UPPER(COMPRO) LIKE '%DIA%' OR UPPER(COMPRO) LIKE '%DAY%')")
+    if status in PURCHASE_STATUSES:
+        clauses.append("UPPER(COALESCE(ESTADO, 'ENTREGADA')) = ?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    try:
+        conn = get_conn(COMPRAS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO,
+                   COALESCE(ESTADO, 'ENTREGADA') AS ESTADO,
+                   COALESCE(NOTAS, '') AS NOTAS,
+                   COALESCE(COMPROBANTE, '') AS COMPROBANTE
+            FROM compras
+            {where}
+            ORDER BY FECHA DESC, ID DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        rows = []
+    return rows
+
+
+def get_admin_history(user_id: str = "", command: str = "", platform: str = "", date_from: str = "", date_to: str = "", q: str = "", limit: int = 300):
+    clauses = []
+    params = []
+    user_id = (user_id or "").strip()
+    command = (command or "").strip().lower()
+    platform = (platform or "").strip().upper()
+    q = (q or "").strip().lower()
+    start_iso, end_iso = _date_bounds(date_from, date_to)
+    if user_id:
+        clauses.append("ID_TG LIKE ?")
+        params.append(f"%{user_id}%")
+    if command:
+        clauses.append("LOWER(consulta) = ?")
+        params.append(command)
+    if platform:
+        clauses.append("plataforma = ?")
+        params.append(platform)
+    if start_iso:
+        clauses.append("fecha >= ?")
+        params.append(start_iso)
+    if end_iso:
+        clauses.append("fecha <= ?")
+        params.append(end_iso)
+    if q:
+        clauses.append("(LOWER(valor) LIKE ? OR LOWER(consulta) LIKE ? OR LOWER(ID_TG) LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    try:
+        conn = get_conn(HIST_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT ID, ID_TG, consulta, valor, fecha, plataforma
+            FROM historial
+            {where}
+            ORDER BY fecha DESC, ID DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        rows = []
+    return rows
+
+
+def get_user_request_items(user_id: str, limit: int = 80):
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return []
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, username, command, payload, status, cost, charged,
+                   delivery_count, created_at, resolved_at, resolved_by, resolution_note,
+                   attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption
+            FROM requests
+            WHERE CAST(user_id AS TEXT) = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def get_user_profile_snapshot(user_id: str):
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return {"user": None, "purchases": [], "history": [], "requests": [], "keys": [], "activity": []}
+    row = get_user_by_id(user_id)
+    return {
+        "user": dict(row) if row else None,
+        "purchases": get_admin_purchases(user_id=user_id, limit=80),
+        "history": get_admin_history(user_id=user_id, limit=80),
+        "requests": get_user_request_items(user_id, limit=80),
+        "keys": get_user_key_redemptions(user_id, limit=80),
+        "activity": get_user_activity(user_id, limit=80),
+    }
+
+
+def get_global_search_results(q: str, limit: int = 25):
+    q = (q or "").strip()
+    results = {"q": q, "users": [], "purchases": [], "history": [], "requests": []}
+    if not q:
+        return results
+    like = f"%{q.lower()}%"
+    try:
+        conn = get_conn(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id_tg, rol_tg, creditos, plan, estado, fecha_caducidad, antispam,
+                   register_web, register_wsp, user_web, number_wsp
+            FROM usuarios
+            WHERE LOWER(id_tg) LIKE ?
+               OR LOWER(COALESCE(rol_tg, '')) LIKE ?
+               OR LOWER(COALESCE(plan, '')) LIKE ?
+               OR LOWER(COALESCE(estado, '')) LIKE ?
+               OR LOWER(COALESCE(user_web, '')) LIKE ?
+               OR LOWER(COALESCE(number_wsp, '')) LIKE ?
+            ORDER BY id_tg DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, like, limit),
+        )
+        results["users"] = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(COMPRAS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO,
+                   COALESCE(ESTADO, 'ENTREGADA') AS ESTADO,
+                   COALESCE(NOTAS, '') AS NOTAS,
+                   COALESCE(COMPROBANTE, '') AS COMPROBANTE
+            FROM compras
+            WHERE LOWER(COALESCE(ID_TG, '')) LIKE ?
+               OR LOWER(COALESCE(VENDEDOR, '')) LIKE ?
+               OR LOWER(COALESCE(COMPRO, '')) LIKE ?
+               OR LOWER(COALESCE(ESTADO, '')) LIKE ?
+               OR LOWER(COALESCE(NOTAS, '')) LIKE ?
+            ORDER BY FECHA DESC, ID DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, limit),
+        )
+        results["purchases"] = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(HIST_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ID, ID_TG, consulta, valor, fecha, plataforma
+            FROM historial
+            WHERE LOWER(COALESCE(ID_TG, '')) LIKE ?
+               OR LOWER(COALESCE(consulta, '')) LIKE ?
+               OR LOWER(COALESCE(valor, '')) LIKE ?
+               OR LOWER(COALESCE(plataforma, '')) LIKE ?
+            ORDER BY fecha DESC, ID DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, limit),
+        )
+        results["history"] = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, username, command, payload, status, cost,
+                   created_at, resolved_at, resolved_by, resolution_note,
+                   attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption
+            FROM requests
+            WHERE LOWER(CAST(user_id AS TEXT)) LIKE ?
+               OR LOWER(COALESCE(username, '')) LIKE ?
+               OR LOWER(COALESCE(command, '')) LIKE ?
+               OR LOWER(COALESCE(payload, '')) LIKE ?
+               OR LOWER(COALESCE(status, '')) LIKE ?
+               OR LOWER(COALESCE(resolution_note, '')) LIKE ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, like, limit),
+        )
+        results["requests"] = [dict(row) for row in cur.fetchall()]
+        conn.close()
+    except Exception:
+        pass
+    return results
+
+
+def get_storage_snapshot():
+    if remote_enabled():
+        return {"data_dir": "Turso (remoto)", "env_data_dir": "TURSO_DATABASE_URL",
+                "railway_mount": "", "items": [{"name": "NEXORA ONE (base unificada)",
+                "path": "nexora-one.db", "exists": True, "size": 0, "in_data_dir": True}]}
+    dbs = [
+        ("usuarios", DB_PATH),
+        ("historial", HIST_DB_PATH),
+        ("compras", COMPRAS_DB_PATH),
+        ("keys", KEYS_DB_PATH),
+        ("requests", REQUESTS_DB_PATH),
+    ]
+    data_dir = get_data_dir()
+    items = []
+    for name, path in dbs:
+        exists = os.path.exists(path)
+        items.append(
+            {
+                "name": name,
+                "path": path,
+                "exists": exists,
+                "size": os.path.getsize(path) if exists else 0,
+                "in_data_dir": os.path.abspath(path).startswith(os.path.abspath(data_dir)),
+            }
+        )
+    return {
+        "data_dir": data_dir,
+        "env_data_dir": os.environ.get("NEXORA_DATA_DIR") or os.environ.get("SPIDERSYN_DATA_DIR") or "",
+        "railway_mount": os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "",
+        "items": items,
+    }
+
+
+def get_health_metrics():
+    metrics = {
+        "usuarios": {"total": 0, "activos": 0, "baneados": 0},
+        "keys": {"total": 0, "disponibles": 0, "agotadas": 0, "canjes": 0},
+        "solicitudes": {"pending": 0, "resolved": 0, "cancelled": 0, "failed": 0},
+        "errores": {"ultimos_15m": 0, "ultimos_24h": 0},
+        "catalogo": {"categories": 0, "commands": 0, "active_commands": 0, "buy_packages": 0},
+    }
+    try:
+        conn = get_conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM usuarios")
+        metrics["usuarios"]["total"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, 'ACTIVO')) != 'BANEADO'")
+        metrics["usuarios"]["activos"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, '')) = 'BANEADO'")
+        metrics["usuarios"]["baneados"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM command_categories")
+        metrics["catalogo"]["categories"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM command_catalog")
+        metrics["catalogo"]["commands"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM command_catalog WHERE COALESCE(is_active, 1) = 1")
+        metrics["catalogo"]["active_commands"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM buy_packages WHERE COALESCE(is_active, 1) = 1")
+        metrics["catalogo"]["buy_packages"] = int(cur.fetchone()[0] or 0)
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(KEYS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM keys")
+        metrics["keys"]["total"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM keys WHERE COALESCE(usos, 0) > 0")
+        metrics["keys"]["disponibles"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM keys WHERE COALESCE(usos, 0) <= 0")
+        metrics["keys"]["agotadas"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM redemptions")
+        metrics["keys"]["canjes"] = int(cur.fetchone()[0] or 0)
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        for status in metrics["solicitudes"].keys():
+            cur.execute("SELECT COUNT(*) FROM requests WHERE status = ?", (status,))
+            metrics["solicitudes"][status] = int(cur.fetchone()[0] or 0)
+        now = now_utc()
+        cutoff_15 = (now - timedelta(minutes=15)).replace(microsecond=0).isoformat() + "Z"
+        cutoff_24 = (now - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+        cur.execute("SELECT COUNT(*) FROM error_logs WHERE created_at >= ?", (cutoff_15,))
+        metrics["errores"]["ultimos_15m"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM error_logs WHERE created_at >= ?", (cutoff_24,))
+        metrics["errores"]["ultimos_24h"] = int(cur.fetchone()[0] or 0)
+        conn.close()
+    except Exception:
+        pass
+    return metrics
+
+
+def get_runtime_status() -> dict:
+    settings = get_panel_settings()
+    storage = get_storage_snapshot()
+    last_worker_seen = settings.get("WORKER_LAST_SEEN") or ""
+    last_conflict = settings.get("WORKER_LAST_POLLING_CONFLICT") or ""
+    current_api_base = (
+        os.environ.get("NEXORA_API_BASE")
+        or os.environ.get("SPIDERSYN_API_BASE")
+        or os.environ.get("API_BASE")
+        or os.environ.get("API_DB_BASE")
+        or ""
+    ).strip().rstrip("/")
+    if not current_api_base:
+        try:
+            proto = request.headers.get("X-Forwarded-Proto") or request.scheme or "https"
+            current_api_base = f"{proto}://{request.host}".rstrip("/")
+        except Exception:
+            current_api_base = ""
+    return {
+        "web_online": True,
+        "worker_online": bool(last_worker_seen),
+        "api_base": current_api_base,
+        "data_volume": storage.get("railway_mount") or storage.get("data_dir") or "",
+        "last_worker_seen": last_worker_seen,
+        "last_polling_conflict": last_conflict,
+    }
+
+
+def backups_dir() -> str:
+    path = os.path.join(get_data_dir(), "backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def panel_assets_dir() -> str:
+    path = os.path.join(get_data_dir(), "panel_assets")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def default_assets_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_assets")
+
+
+def public_base_url() -> str:
+    configured = (
+        os.environ.get("NEXORA_PANEL_URL")
+        or os.environ.get("SPIDERSYN_PANEL_URL")
+        or os.environ.get("PUBLIC_URL")
+        or os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+        or ""
+    ).strip()
+    if configured:
+        if not configured.startswith(("http://", "https://")):
+            configured = "https://" + configured
+        return configured.rstrip("/")
+    return request.url_root.rstrip("/")
+
+
+def is_allowed_visual_upload(filename: str) -> bool:
+    ext = os.path.splitext(filename or "")[1].lower().lstrip(".")
+    return ext in ALLOWED_VISUAL_EXTENSIONS
+
+
+@app.route("/assets/panel/<path:filename>", methods=["GET"])
+def panel_public_asset(filename: str):
+    safe_name = secure_filename(os.path.basename(filename))
+    if not safe_name or safe_name != os.path.basename(filename):
+        return jsonify({"status": "error", "message": "Archivo inválido"}), 400
+    saved = get_image(safe_name)
+    if saved:
+        return send_file(io.BytesIO(saved[1]), mimetype=saved[0], download_name=safe_name)
+    path = os.path.join(panel_assets_dir(), safe_name)
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
+    return send_file(path)
+
+
+@app.route("/assets/default/<path:filename>", methods=["GET"])
+def default_public_asset(filename: str):
+    safe_name = secure_filename(os.path.basename(filename))
+    if not safe_name or safe_name != os.path.basename(filename):
+        return jsonify({"status": "error", "message": "Archivo inválido"}), 400
+    path = os.path.join(default_assets_dir(), safe_name)
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
+    return send_file(path)
+
+
+def get_daily_backups(limit: int = 20):
+    try:
+        folder = backups_dir()
+        items = []
+        for name in os.listdir(folder):
+            if not (name.startswith(("spidersyn-auto-", "nexora-auto-", "nexora-before-restore-")) and name.endswith(".zip")):
+                continue
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                continue
+            size = os.path.getsize(path)
+            items.append(
+                {
+                    "name": name,
+                    "path": path,
+                    "size": size,
+                    "size_label": format_bytes(size),
+                    "created_at": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(timespec="seconds"),
+                }
+            )
+        items.sort(key=lambda row: row["name"], reverse=True)
+        return items[:limit]
+    except Exception:
+        return []
+
+
+def create_db_backup_file(path: str):
+    with tempfile.TemporaryDirectory() as folder, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        paths = [DB_PATH] if remote_enabled() else [DB_PATH, HIST_DB_PATH, COMPRAS_DB_PATH, KEYS_DB_PATH, REQUESTS_DB_PATH]
+        for source in paths:
+            if remote_enabled() or os.path.exists(source):
+                name = "nexora-one.db" if remote_enabled() else os.path.basename(source)
+                exported = os.path.join(folder, name)
+                snapshot(source, exported)
+                zf.write(exported, arcname=name)
+
+
+def format_bytes(size: int) -> str:
+    value = float(size or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+
+def create_named_db_backup(prefix: str) -> str:
+    safe_prefix = secure_filename(prefix or "nexora-backup") or "nexora-backup"
+    path = os.path.join(backups_dir(), f"{safe_prefix}-{now_utc().strftime('%Y%m%d%H%M%S')}.zip")
+    tmp_path = path + ".tmp"
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        create_db_backup_file(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    return path
+
+
+def ensure_daily_backup(force: bool = False):
+    folder = backups_dir()
+    today = now_utc().strftime("%Y%m%d")
+    backup_name = f"nexora-auto-{today}.zip"
+    backup_path = os.path.join(folder, backup_name)
+    if force or not os.path.exists(backup_path):
+        tmp_path = backup_path + ".tmp"
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            create_db_backup_file(tmp_path)
+            if force and os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.replace(tmp_path, backup_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+        log_audit_event("backup.auto", backup_name, f"size={os.path.getsize(backup_path)}")
+
+    backups = get_daily_backups(limit=100)
+    for old in backups[7:]:
+        try:
+            os.remove(old["path"])
+        except Exception:
+            pass
+    return backup_path
+
+
+def get_history_cleanup_preview():
+    preview = []
+    now = now_utc()
+    for days in (30, 60, 90, 180):
+        cutoff = (now - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
+        total = 0
+        try:
+            conn = get_conn(HIST_DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM historial WHERE fecha < ?", (cutoff,))
+            total = int(cur.fetchone()[0] or 0)
+            conn.close()
+        except Exception:
+            total = 0
+        preview.append({"days": days, "cutoff": cutoff, "total": total})
+    return preview
+
+
+def get_error_logs(limit: int = 50):
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS error_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT,
+                method TEXT,
+                message TEXT,
+                traceback TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            SELECT id, path, method, message, traceback, created_at
+            FROM error_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def get_audit_logs(limit: int = 80, action: str = "", actor: str = "", target: str = ""):
+    try:
+        conn = get_conn(REQUESTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT,
+                ip TEXT,
+                action TEXT,
+                target TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        clauses = []
+        params = []
+        if action:
+            clauses.append("LOWER(action) LIKE ?")
+            params.append(f"%{action.strip().lower()}%")
+        if actor:
+            clauses.append("LOWER(actor) LIKE ?")
+            params.append(f"%{actor.strip().lower()}%")
+        if target:
+            clauses.append("LOWER(target) LIKE ?")
+            params.append(f"%{target.strip().lower()}%")
+        query = """
+            SELECT id, actor, ip, action, target, details, created_at
+            FROM audit_logs
+        """
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += """
+            ORDER BY id DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        cur.execute(query, params)
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+@schema_initializer
+def init_panel_accounts_db():
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS panel_accounts (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'SOPORTE',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_panel_account(username: str):
+    username = (username or "").strip()
+    if not username:
+        return None
+    try:
+        init_panel_accounts_db()
+        conn = get_conn(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT username, password_hash, role, is_active, created_at, updated_at FROM panel_accounts WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_panel_accounts():
+    try:
+        init_panel_accounts_db()
+        conn = get_conn(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT username, role, is_active, created_at, updated_at
+            FROM panel_accounts
+            ORDER BY role ASC, username ASC
+            """
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _csv_response(filename: str, rows: list[dict], fieldnames: list[str]):
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    body = out.getvalue()
+    return Response(
+        body,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def _json_download_response(filename: str, payload):
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    return Response(
+        body,
+        mimetype="application/json; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def _is_panel_logged_in() -> bool:
+    return bool(session.get("panel_auth"))
+
+
+def require_panel_login():
+    if not _panel_request_allowed():
+        return jsonify({"status": "error", "message": "Panel solo disponible localmente"}), 403
+    if not _is_panel_logged_in():
+        return redirect(url_for("panel_login", next=request.full_path if request.query_string else request.path))
+    return None
+
+
+def panel_current_role() -> str:
+    return (session.get("panel_role") or "FUNDADOR").strip().upper()
+
+
+def panel_current_user() -> str:
+    return (session.get("panel_user") or PANEL_USER or "panel").strip()
+
+
+def panel_seller_vendor_scope() -> str:
+    return panel_current_user() if panel_current_role() == "SELLER" else ""
+
+
+def panel_can_access_section(section: str, role: str | None = None) -> bool:
+    role = (role or panel_current_role()).strip().upper()
+    return role in PANEL_SECTION_ACCESS.get(section, {"FUNDADOR"})
+
+
+def panel_nav_items_for_role(role: str | None = None):
+    role = (role or panel_current_role()).strip().upper()
+    return [{"section": section, "label": label} for section, label in PANEL_NAV_ITEMS if panel_can_access_section(section, role)]
+
+
+def require_panel_roles(*roles: str):
+    gate = require_panel_login()
+    if gate:
+        return gate
+    allowed = {role.strip().upper() for role in roles}
+    if panel_current_role() not in allowed:
+        return redirect(url_for("admin_panel", section="resumen", flash="No tienes permiso para esa acción."))
+    return None
+
+
+def require_panel_owner():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    if panel_current_role() != "FUNDADOR":
+        return redirect(url_for("admin_panel", section="sistema", flash="Solo el FUNDADOR puede hacer esa acción."))
+    return None
+
+@schema_initializer
+def init_hist_db():
+    conn = get_conn(HIST_DB_PATH)
+    cur = conn.cursor()
+    # ¿Existe la tabla?
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='historial';")
+    exists = cur.fetchone() is not None
+
+    if not exists:
+        # Crear con el esquema nuevo (ID autoincremental y CHECK de plataforma)
+        cur.execute(
+            """
+            CREATE TABLE historial (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID_TG TEXT,
+                consulta TEXT,
+                valor TEXT,
+                fecha TEXT,
+                plataforma TEXT NOT NULL CHECK (plataforma IN ('TG','WEB','WSP'))
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+        return
+
+    # Si existe, revisamos columnas; si estaba con ID_TG como PK, migramos.
+    cur.execute("PRAGMA table_info(historial);")
+    cols = [(r[1], r[5]) for r in cur.fetchall()]  # (name, pk)
+    col_names = [c[0] for c in cols]
+    # Esquema deseado:
+    desired = ["ID", "ID_TG", "consulta", "valor", "fecha", "plataforma"]
+
+    def needs_migration() -> bool:
+        # Si no coincide EXACTO o si ID_TG es PK, migramos
+        if col_names == desired and any(pk == 1 for (name, pk) in cols if name == "ID"):
+            return False
+        # Caso típico viejo: PK en ID_TG
+        if "ID_TG" in col_names and any(pk == 1 for (name, pk) in cols if name == "ID_TG"):
+            return True
+        # Cualquier otra diferencia de esquema -> migrar por seguridad
+        return True
+
+    if needs_migration():
+        # Crear tabla nueva, copiar datos, renombrar
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS historial_new (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID_TG TEXT,
+                consulta TEXT,
+                valor TEXT,
+                fecha TEXT,
+                plataforma TEXT NOT NULL CHECK (plataforma IN ('TG','WEB','WSP'))
+            );
+            """
+        )
+        # Copiar lo que exista, normalizando plataforma a 'TG' si no cumple
+        if "plataforma" in col_names:
+            cur.execute(
+                """
+                INSERT INTO historial_new (ID_TG, consulta, valor, fecha, plataforma)
+                SELECT 
+                    COALESCE(ID_TG, ''), 
+                    COALESCE(consulta, ''), 
+                    COALESCE(valor, ''), 
+                    COALESCE(fecha, ''), 
+                    CASE WHEN plataforma IN ('TG','WEB','WSP') THEN plataforma ELSE 'TG' END
+                FROM historial;
+                """
+            )
+        else:
+            # Tabla antigua sin 'plataforma'
+            cur.execute(
+                """
+                INSERT INTO historial_new (ID_TG, consulta, valor, fecha, plataforma)
+                SELECT 
+                    COALESCE(ID_TG, ''), 
+                    COALESCE(consulta, ''), 
+                    COALESCE(valor, ''), 
+                    COALESCE(fecha, ''), 
+                    'TG'
+                FROM historial;
+                """
+            )
+        cur.execute("DROP TABLE historial;")
+        cur.execute("ALTER TABLE historial_new RENAME TO historial;")
+        conn.commit()
+
+    conn.close()
+
+@schema_initializer
+def init_compras_db():
+    conn = get_conn(COMPRAS_DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='compras';")
+    exists = cur.fetchone() is not None
+
+    recreate = False
+    cols = []
+    if exists:
+        cur.execute("PRAGMA table_info(compras);")
+        cols = [r[1] for r in cur.fetchall()]
+        desired = ["ID", "ID_TG", "VENDEDOR", "FECHA", "COMPRO", "ESTADO", "NOTAS", "COMPROBANTE"]
+        if cols != desired:
+            recreate = True
+    else:
+        recreate = True
+
+    if recreate:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS compras_new (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID_TG TEXT,
+                VENDEDOR TEXT,
+                FECHA TEXT,
+                COMPRO TEXT,
+                ESTADO TEXT DEFAULT 'ENTREGADA',
+                NOTAS TEXT DEFAULT '',
+                COMPROBANTE TEXT DEFAULT ''
+            );
+            """
+        )
+        if exists:
+            old_cols = set(cols)
+            select_id = "ID_TG" if "ID_TG" in old_cols else "''"
+            select_vendedor = "VENDEDOR" if "VENDEDOR" in old_cols else "''"
+            select_fecha = "FECHA" if "FECHA" in old_cols else "''"
+            select_compro = "COMPRO" if "COMPRO" in old_cols else "''"
+            select_estado = "ESTADO" if "ESTADO" in old_cols else "'ENTREGADA'"
+            select_notas = "NOTAS" if "NOTAS" in old_cols else "''"
+            select_comprobante = "COMPROBANTE" if "COMPROBANTE" in old_cols else "''"
+            cur.execute(
+                f"""
+                INSERT INTO compras_new (ID_TG, VENDEDOR, FECHA, COMPRO, ESTADO, NOTAS, COMPROBANTE)
+                SELECT {select_id}, {select_vendedor}, {select_fecha}, {select_compro},
+                       COALESCE(NULLIF(TRIM({select_estado}), ''), 'ENTREGADA'),
+                       COALESCE({select_notas}, ''),
+                       COALESCE({select_comprobante}, '')
+                FROM compras
+                """
+            )
+            cur.execute("DROP TABLE compras;")
+            cur.execute("ALTER TABLE compras_new RENAME TO compras;")
+        else:
+            cur.execute("ALTER TABLE compras_new RENAME TO compras;")
+        conn.commit()
+
+    conn.close()
+
+# -------------------------
+# DB helpers
+# -------------------------
+def get_user_by_id(id_tg):
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM usuarios WHERE id_tg = ?", (id_tg,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def get_user_by_web_token(token):
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM usuarios WHERE token_api_web = ?", (token,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def update_user_profile(user_id, credits, days_valid):
+    """Actualiza los créditos y días válidos del usuario en su perfil en multplatatforma.db."""
+    conn = db_connect(DB_PATH)  # Conectar a la base de datos de clientes
+    cursor = conn.cursor()
+
+    # Actualizar los créditos y días válidos del usuario
+    cursor.execute("""
+        UPDATE usuarios
+        SET creditos = creditos + ?, fecha_caducidad = ?
+        WHERE id_tg = ?
+    """, (credits, days_valid, user_id))
+
+    conn.commit()
+    conn.close()
+
+def get_user_by_wsp_token(token):
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM usuarios WHERE token_api_wsp = ?", (token,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def create_user(id_tg):
+    ts = now_iso()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO usuarios (
+            id_tg, rol_tg, fecha_register_tg,
+            creditos, plan, estado, fecha_caducidad,
+            register_web, register_wsp,
+            token_api_web, user_web, pass_web, rol_web, fecha_register_web,
+            token_api_wsp, number_wsp, rol_wsp, fecha_register_wsp,
+            antispam
+        ) VALUES (
+            ?, 'FREE', ?,
+            5, 'FREE', 'ACTIVO', NULL,
+            0, 0,
+            NULL, NULL, NULL, 'FREE', NULL,
+            NULL, NULL, 'FREE', NULL,
+            60
+        )
+        """,
+        (id_tg, ts),
+    )
+    conn.commit()
+    conn.close()
+
+def row_info_payload(row: sqlite3.Row):
+    return {
+        "ID_TG": row["id_tg"],
+        "ROL_TG": row["rol_tg"],
+        "FECHA_REGISTER_TG": row["fecha_register_tg"],
+        "CREDITOS": row["creditos"],
+        "PLAN": row["plan"],
+        "ESTADO": row["estado"],
+        "FECHA DE CADUCIDAD": row["fecha_caducidad"],
+        "REGISTER_WEB": bool(row["register_web"]),
+        "REGISTER_WSP": bool(row["register_wsp"]),
+        "ROL_WEB": row["rol_web"],
+        "ROL_WSP": row["rol_wsp"],
+        "ANTISPAM": row["antispam"],
+    }
+
+# -------------------------
+# Endpoints existentes resumidos (con mensajes)
+# -------------------------
+
+@app.route("/register", methods=["GET"])
+def register():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request.args.get("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "exists": False, "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if row:
+        return jsonify({"status": "error", "exists": True, "message": "El usuario ya está registrado"}), 423
+    create_user(id_tg)
+    log_audit_event("bot.user.register", id_tg, "created via /register", actor=bot_actor())
+    return jsonify({"status": "ok", "exists": False, "message": "Usuario registrado correctamente"}), 200
+
+@app.route("/tg_info", methods=["GET"])
+def tg_info():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    data = row_info_payload(row)
+    return jsonify({"status": "ok", "message": "Información obtenida correctamente", "data": data}), 200
+
+@app.route("/create_token_web", methods=["POST"])
+def create_token_web():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    if row["token_api_web"] is not None:
+        return jsonify({"status": "error", "message": "Ya existe un token WEB para este usuario"}), 423
+    token = generate_unique_token()
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET token_api_web = ? WHERE id_tg = ?", (token, id_tg))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": "Token WEB creado correctamente"}), 200
+
+@app.route("/create_token_wsp", methods=["POST"])
+def create_token_wsp():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    if row["token_api_wsp"] is not None:
+        return jsonify({"status": "error", "message": "Ya existe un token WSP para este usuario"}), 423
+    token = generate_unique_token()
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET token_api_wsp = ? WHERE id_tg = ?", (token, id_tg))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": "Token WSP creado correctamente"}), 200
+
+@app.route("/info_token_web", methods=["POST"])
+def info_token_web():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    token = row["token_api_web"]
+    if not token:
+        return jsonify({"status": "error", "message": "Token WEB no encontrado para este usuario"}), 404
+    return jsonify({"status": "ok", "message": "Token WEB obtenido correctamente", "TOKEN_API_WEB": token}), 200
+
+@app.route("/info_token_wsp", methods=["POST"])
+def info_token_wsp():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    token = row["token_api_wsp"]
+    if not token:
+        return jsonify({"status": "error", "message": "Token WSP no encontrado para este usuario"}), 404
+    return jsonify({"status": "ok", "message": "Token WSP obtenido correctamente", "TOKEN_API_WSP": token}), 200
+
+@app.route("/info_web", methods=["GET", "POST"])
+def info_web():
+    token = request_token_value()
+    if not token:
+        return jsonify({"status": "error", "message": "Falta el parámetro token"}), 400
+    row = get_user_by_web_token(token)
+    if not row:
+        return jsonify({"status": "error", "message": "Token WEB no válido o usuario no encontrado"}), 404
+    data = {
+        "TOKEN_API_WEB": token,
+        "ID_TG": row["id_tg"],
+        "CREDITOS": row["creditos"],
+        "PLAN": row["plan"],
+        "ESTADO": row["estado"],
+        "FECHA DE CADUCIDAD": row["fecha_caducidad"],
+        "REGISTER_WEB": bool(row["register_web"]),
+        "REGISTER_WSP": bool(row["register_wsp"]),
+        "ROL_WEB": row["rol_web"],
+        "FECHA_REGISTER_WEB": row["fecha_register_web"],
+        "ANTISPAM": row["antispam"],
+    }
+    return jsonify({"status": "ok", "message": "Información WEB obtenida correctamente", "data": data}), 200
+
+@app.route("/info_wsp", methods=["GET", "POST"])
+def info_wsp():
+    token = request_token_value()
+    if not token:
+        return jsonify({"status": "error", "message": "Falta el parámetro token"}), 400
+    row = get_user_by_wsp_token(token)
+    if not row:
+        return jsonify({"status": "error", "message": "Token WSP no válido o usuario no encontrado"}), 404
+    data = {
+        "TOKEN_API_WSP": token,
+        "ID_TG": row["id_tg"],
+        "CREDITOS": row["creditos"],
+        "PLAN": row["plan"],
+        "ESTADO": row["estado"],
+        "FECHA DE CADUCIDAD": row["fecha_caducidad"],
+        "REGISTER_WEB": bool(row["register_web"]),
+        "REGISTER_WSP": bool(row["register_wsp"]),
+        "NUMBER_WSP": row["number_wsp"],
+        "ROL_WSP": row["rol_wsp"],
+        "FECHA_REGISTER_WSP": row["fecha_register_wsp"],
+        "ANTISPAM": row["antispam"],
+    }
+    return jsonify({"status": "ok", "message": "Información WSP obtenida correctamente", "data": data}), 200
+
+# -------------------------
+# Activación WEB/WSP
+# -------------------------
+@app.route("/activate_wsp", methods=["POST"])
+def activate_wsp():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    token = request_value("token")
+    number_wsp = request_value("number_wsp")
+    if not token or not number_wsp:
+        return jsonify({"status": "error", "message": "Faltan parámetros: token y number_wsp son requeridos"}), 400
+    row = get_user_by_wsp_token(token)
+    if not row:
+        return jsonify({"status": "error", "message": "Token WSP no válido o usuario no encontrado"}), 404
+    if bool(row["register_wsp"]):
+        return jsonify({"status": "error", "message": "WSP ya se encuentra activado para este usuario"}), 423
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET register_wsp = 1, number_wsp = ?, fecha_register_wsp = ? WHERE token_api_wsp = ?",
+                (number_wsp, now_iso(), token))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": "WSP activado correctamente"}), 200
+
+@app.route("/activate_web", methods=["POST"])
+def activate_web():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    token = request_value("token")
+    user = request_value("user")
+    password = request_value("pass")
+    if not token or not user or not password:
+        return jsonify({"status": "error", "message": "Faltan parámetros: token, user y pass son requeridos"}), 400
+    row = get_user_by_web_token(token)
+    if not row:
+        return jsonify({"status": "error", "message": "Token WEB no válido o usuario no encontrado"}), 404
+    if bool(row["register_web"]):
+        return jsonify({"status": "error", "message": "WEB ya se encuentra activado para este usuario"}), 423
+    conn = get_conn(); cur = conn.cursor()
+    password_hash = generate_password_hash(password)
+    cur.execute("UPDATE usuarios SET register_web = 1, user_web = ?, pass_web = ?, fecha_register_web = ? WHERE token_api_web = ?",
+                (user, password_hash, now_iso(), token))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": "WEB activado correctamente"}), 200
+
+# -------------------------
+# Créditos (/cred) y Suscripción (/sub)
+# -------------------------
+@app.route("/cred", methods=["POST"])
+def cred():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    oper = (request_value("operacion") or "").strip().lower()
+    cantidad_raw = request_value("cantidad")
+    if not id_tg or not oper or cantidad_raw is None:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, operacion, cantidad"}), 400
+    try:
+        cantidad = int(cantidad_raw)
+        if cantidad < 0:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"status": "error", "message": "cantidad debe ser un entero no negativo"}), 400
+
+    if oper not in ("igualar", "sumar", "restar"):
+        return jsonify({"status": "error", "message": "operacion debe ser igualar, sumar o restar"}), 400
+
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("SELECT creditos FROM usuarios WHERE id_tg=?", (id_tg,))
+        fresh = cur.fetchone()
+        if not fresh:
+            conn.rollback()
+            return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+        current = int(fresh[0] or 0)
+        new_val = cantidad if oper == "igualar" else (current + cantidad if oper == "sumar" else max(0, current - cantidad))
+        cur.execute("UPDATE usuarios SET creditos = ? WHERE id_tg = ?", (new_val, id_tg))
+        conn.commit()
+    except sqlite3.OperationalError:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"status": "error", "message": "No se pudo confirmar el cambio. Consulta el saldo antes de repetirlo."}), 503
+    finally:
+        conn.close()
+    log_audit_event("bot.credits", id_tg, f"oper={oper}; amount={cantidad}; before={current}; after={new_val}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"Créditos {oper} => {new_val}", "CREDITOS": new_val}), 200
+
+@app.route("/sub", methods=["POST"])
+def sub():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    oper = (request_value("operacion") or "").strip().lower()
+    cantidad_raw = request_value("cantidad")
+    if not id_tg or not oper or cantidad_raw is None:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, operacion, cantidad"}), 400
+    try:
+        dias = int(cantidad_raw)
+        if dias < 0:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"status": "error", "message": "cantidad debe ser un entero no negativo (días)"}), 400
+
+    if oper not in ("igualar", "sumar", "restar"):
+        return jsonify({"status": "error", "message": "operacion debe ser igualar, sumar o restar"}), 400
+
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+
+    now = now_utc()
+    fcad = row["fecha_caducidad"]
+    # Reglas especiales:
+    if fcad is None or str(fcad).strip() == "":
+        if oper in ("sumar", "igualar"):
+            new_dt = now + timedelta(days=dias)
+        else:  # restar desde NULL no tiene sentido
+            return jsonify({"status": "error", "message": "No se puede restar días: la fecha de caducidad está vacía"}), 400
+    else:
+        try:
+            current_dt = parse_iso(fcad)
+        except Exception:
+            current_dt = now  # si hay formato inesperado, normalizamos
+        if current_dt < now:
+            # Si ya venció: igualar a ahora + dias (sin importar la operación)
+            new_dt = now + timedelta(days=dias)
+        else:
+            if oper == "igualar":
+                new_dt = now + timedelta(days=dias)
+            elif oper == "sumar":
+                new_dt = current_dt + timedelta(days=dias)
+            else:  # restar
+                new_dt = current_dt - timedelta(days=dias)
+
+    new_iso = new_dt.replace(microsecond=0).isoformat() + "Z"
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET fecha_caducidad = ? WHERE id_tg = ?", (new_iso, id_tg))
+    conn.commit(); conn.close()
+    log_audit_event("bot.subscription", id_tg, f"oper={oper}; days={dias}; expires={new_iso}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"Fecha de caducidad {oper}", "FECHA_DE_CADUCIDAD": new_iso}), 200
+
+
+def generate_license_key() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    chunks = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
+    return "-".join(chunks)
+
+
+def create_license_keys(tipo: str, cantidad: int, usos: int, total: int, creador_id: int) -> list[str]:
+    init_keys_db()
+    conn = get_conn(KEYS_DB_PATH)
+    cur = conn.cursor()
+    created = []
+    for _ in range(total):
+        for _attempt in range(20):
+            key = generate_license_key()
+            try:
+                cur.execute(
+                    "INSERT INTO keys (key, tipo, cantidad, usos, creador_id) VALUES (?, ?, ?, ?, ?)",
+                    (key, tipo, cantidad, usos, creador_id),
+                )
+                created.append(key)
+                break
+            except sqlite3.IntegrityError:
+                continue
+        else:
+            conn.rollback()
+            conn.close()
+            raise RuntimeError("No se pudo generar una key única")
+    conn.commit()
+    conn.close()
+    return created
+
+
+def record_purchase_event(id_tg: str, vendedor: str, compro: str, estado: str = "ENTREGADA", notas: str = "", comprobante: str = "") -> int:
+    init_compras_db()
+    fecha = now_iso()
+    conn = get_conn(COMPRAS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO compras (ID_TG, VENDEDOR, FECHA, COMPRO, ESTADO, NOTAS, COMPROBANTE)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (str(id_tg), str(vendedor), fecha, str(compro), estado, notas, comprobante),
+    )
+    purchase_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return int(purchase_id)
+
+
+@app.route("/keys/generate", methods=["POST"])
+def keys_generate():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    tipo = (request_value("tipo") or "").strip().lower()
+    creador_id = str(request_value("creador_id") or "").strip()
+    try:
+        cantidad = int(request_value("cantidad") or 0)
+        usos = int(request_value("usos") or 0)
+        total = int(request_value("total") or 1)
+    except Exception:
+        return jsonify({"status": "error", "message": "cantidad, usos y total deben ser enteros"}), 400
+    if tipo not in {"dias", "creditos"}:
+        return jsonify({"status": "error", "message": "tipo debe ser dias o creditos"}), 400
+    if cantidad <= 0 or usos <= 0 or total <= 0:
+        return jsonify({"status": "error", "message": "cantidad, usos y total deben ser mayores a 0"}), 400
+    if total > 100:
+        return jsonify({"status": "error", "message": "No puedes generar más de 100 keys por lote"}), 400
+    if not creador_id.isdigit():
+        return jsonify({"status": "error", "message": "creador_id inválido"}), 400
+
+    try:
+        created = create_license_keys(tipo, cantidad, usos, total, int(creador_id))
+    except RuntimeError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+    log_audit_event("bot.keys.generate", tipo, f"amount={cantidad}; usos={usos}; total={total}; creator={creador_id}", actor=bot_actor())
+    return jsonify({
+        "status": "ok",
+        "message": "Keys generadas correctamente",
+        "data": {"keys": created, "tipo": tipo, "cantidad": cantidad, "usos": usos},
+    }), 200
+
+
+@app.route("/keys/redeem", methods=["POST"])
+def keys_redeem():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    key_input = (request_value("key") or "").strip().upper()
+    user_id = str(request_value("ID_TG") or request_value("user_id") or "").strip()
+    if not key_input or not user_id:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: key, ID_TG"}), 400
+    if not user_id.isdigit():
+        return jsonify({"status": "error", "message": "ID_TG inválido"}), 400
+    row = get_user_by_id(user_id)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado. Usa /register primero."}), 404
+
+    init_keys_db()
+    conn_keys = get_conn(KEYS_DB_PATH)
+    ck = conn_keys.cursor()
+    conn_users = None
+    try:
+        ck.execute("BEGIN IMMEDIATE")
+        ck.execute("SELECT key, tipo, cantidad, usos FROM keys WHERE key = ?", (key_input,))
+        key_row = ck.fetchone()
+        if not key_row:
+            conn_keys.rollback()
+            return jsonify({"status": "error", "message": "Key inválida"}), 404
+        key, tipo, cantidad, usos = key_row
+        cantidad = int(cantidad or 0)
+        usos = int(usos or 0)
+        if usos <= 0:
+            conn_keys.rollback()
+            return jsonify({"status": "error", "message": "Esta key ya no tiene usos disponibles"}), 409
+        ck.execute("SELECT 1 FROM redemptions WHERE key = ? AND user_id = ? LIMIT 1", (key, int(user_id)))
+        if ck.fetchone():
+            conn_keys.rollback()
+            return jsonify({"status": "error", "message": "Ya canjeaste esta key anteriormente"}), 409
+
+        # Turso stores keys and users in the same database: use the SAME
+        # transaction, otherwise the second connection blocks the first one.
+        conn_users = conn_keys if remote_enabled() else get_conn()
+        cu = conn_users.cursor()
+        if remote_enabled():
+            cu.execute("SELECT creditos,fecha_caducidad FROM usuarios WHERE id_tg=?", (user_id,))
+            current_user = cu.fetchone()
+            if not current_user:
+                conn_keys.rollback()
+                return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+            row = {"creditos": current_user[0], "fecha_caducidad": current_user[1]}
+        if tipo == "creditos":
+            current = int(row["creditos"] or 0)
+            new_value = current + cantidad
+            cu.execute("UPDATE usuarios SET creditos = ? WHERE id_tg = ?", (new_value, user_id))
+            result = {"CREDITOS": new_value}
+            message = f"Has canjeado {cantidad} créditos."
+        elif tipo == "dias":
+            now = now_utc()
+            fcad = row["fecha_caducidad"]
+            try:
+                current_dt = parse_iso(fcad) if fcad else now
+            except Exception:
+                current_dt = now
+            base_dt = current_dt if current_dt > now else now
+            new_dt = base_dt + timedelta(days=cantidad)
+            new_iso = new_dt.replace(microsecond=0).isoformat() + "Z"
+            cu.execute("UPDATE usuarios SET fecha_caducidad = ? WHERE id_tg = ?", (new_iso, user_id))
+            result = {"FECHA_DE_CADUCIDAD": new_iso}
+            message = f"Has canjeado {cantidad} días."
+        else:
+            if conn_users is not conn_keys:
+                conn_users.close()
+            conn_keys.rollback()
+            return jsonify({"status": "error", "message": "Tipo de key inválido"}), 400
+
+        ck.execute("UPDATE keys SET usos = usos - 1 WHERE key = ?", (key,))
+        ck.execute("INSERT INTO redemptions (key, user_id) VALUES (?, ?)", (key, int(user_id)))
+        if conn_users is not conn_keys:
+            conn_users.commit()
+            conn_users.close()
+        conn_keys.commit()
+    except Exception as exc:
+        try:
+            conn_keys.rollback()
+        except Exception:
+            pass
+        try:
+            if conn_users and conn_users is not conn_keys:
+                conn_users.rollback()
+                conn_users.close()
+        except Exception:
+            pass
+        return jsonify({"status": "error", "message": f"No se pudo canjear la key: {exc}"}), 500
+    finally:
+        conn_keys.close()
+
+    purchase_label = f"KEY:{tipo.upper()}:{cantidad}"
+    purchase_id = None
+    purchase_logged = False
+    try:
+        purchase_id = record_purchase_event(
+            id_tg=user_id,
+            vendedor="KEY",
+            compro=purchase_label,
+            estado="ENTREGADA",
+            notas=f"Canje automático de key {key}",
+            comprobante=key,
+        )
+        purchase_logged = True
+        log_audit_event("keys.redeem.purchase", key, f"user={user_id}; purchase_id={purchase_id}; {purchase_label}")
+    except Exception:
+        purchase_logged = False
+
+    return jsonify({
+        "status": "ok",
+        "message": message,
+        "data": {
+            "key": key,
+            "tipo": tipo,
+            "cantidad": cantidad,
+            "usos_restantes": usos - 1,
+            "purchase_logged": purchase_logged,
+            "purchase_id": purchase_id,
+            **result,
+        },
+    }), 200
+
+
+@app.route("/keys/info", methods=["GET", "POST"])
+def keys_info():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    key_input = (request_value("key") or "").strip().upper()
+    if not key_input:
+        return jsonify({"status": "error", "message": "Falta key"}), 400
+    init_keys_db()
+    conn = get_conn(KEYS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT key, tipo, cantidad, usos, creador_id, fecha_creacion
+        FROM keys WHERE key = ?
+        """,
+        (key_input,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"status": "error", "message": "Key no encontrada"}), 404
+    cur.execute("SELECT COUNT(*) FROM redemptions WHERE key = ?", (key_input,))
+    redemptions_count = cur.fetchone()[0]
+    conn.close()
+    data = dict(row)
+    data["canjes"] = redemptions_count
+    return jsonify({"status": "ok", "data": data}), 200
+
+
+@app.route("/keys/log", methods=["GET"])
+def keys_log():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    try:
+        limit = int(request_value("limit") or 15)
+    except Exception:
+        limit = 15
+    limit = max(1, min(limit, 100))
+    init_keys_db()
+    conn = get_conn(KEYS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT r.key, r.user_id, r.fecha_canje, k.tipo, k.cantidad
+        FROM redemptions r
+        JOIN keys k ON r.key = k.key
+        ORDER BY r.fecha_canje DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return jsonify({"status": "ok", "data": rows}), 200
+
+# -------------------------
+# Plan y Roles
+# -------------------------
+PLANES_VALIDOS = {"PREMIUM", "STANDARD", "BASICO", "FREE"}
+ROLES_VALIDOS = {"FREE", "CLIENTE", "SELLER", "CO-FUNDADOR", "FUNDADOR"}
+
+@app.route("/plan", methods=["POST"])
+def set_plan():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    plan = (request_value("plan") or "").upper()
+    if not id_tg or not plan:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, plan"}), 400
+    if plan not in PLANES_VALIDOS:
+        return jsonify({"status": "error", "message": f"plan inválido. Opciones: {', '.join(PLANES_VALIDOS)}"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET plan = ? WHERE id_tg = ?", (plan, id_tg))
+    conn.commit(); conn.close()
+    log_audit_event("bot.plan", id_tg, f"plan={plan}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"Plan actualizado a {plan}"}), 200
+
+@app.route("/rol_wsp", methods=["POST"])
+def set_rol_wsp():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    rol = (request_value("rol") or "").upper()
+    if not id_tg or not rol:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, rol"}), 400
+    if rol not in ROLES_VALIDOS:
+        return jsonify({"status": "error", "message": f"rol inválido. Opciones: {', '.join(ROLES_VALIDOS)}"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET rol_wsp = ? WHERE id_tg = ?", (rol, id_tg))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": f"ROL_WSP actualizado a {rol}"}), 200
+
+@app.route("/rol_web", methods=["POST"])
+def set_rol_web():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    rol = (request_value("rol") or "").upper()
+    if not id_tg or not rol:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, rol"}), 400
+    if rol not in ROLES_VALIDOS:
+        return jsonify({"status": "error", "message": f"rol inválido. Opciones: {', '.join(ROLES_VALIDOS)}"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET rol_web = ? WHERE id_tg = ?", (rol, id_tg))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": f"ROL_WEB actualizado a {rol}"}), 200
+
+@app.route("/rol_tg", methods=["POST"])
+def set_rol_tg():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    rol = (request_value("rol") or "").upper()
+    if not id_tg or not rol:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, rol"}), 400
+    if rol not in ROLES_VALIDOS:
+        return jsonify({"status": "error", "message": f"rol inválido. Opciones: {', '.join(ROLES_VALIDOS)}"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET rol_tg = ? WHERE id_tg = ?", (rol, id_tg))
+    conn.commit(); conn.close()
+    log_audit_event("bot.role", id_tg, f"rol_tg={rol}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"ROL_TG actualizado a {rol}"}), 200
+
+# -------------------------
+# Antispam
+# -------------------------
+@app.route("/antispam", methods=["POST"])
+def set_antispam():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    val_raw = request_value("valor")
+    if not id_tg or val_raw is None:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, valor"}), 400
+    try:
+        val = int(val_raw)
+        if val < 0:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"status": "error", "message": "valor debe ser un entero no negativo"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET antispam = ? WHERE id_tg = ?", (val, id_tg))
+    conn.commit(); conn.close()
+    log_audit_event("bot.antispam", id_tg, f"antispam={val}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"ANTISPAM actualizado a {val}", "ANTISPAM": val}), 200
+
+# -------------------------
+# Compras e Historial
+# -------------------------
+@app.route("/compras", methods=["POST"])
+def compras():
+    # Ahora ID_TG es el identificador del cliente
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    id_vendedor = request_value("ID_VENDEDOR")
+    cantidad = request_value("CANTIDAD")  # p.ej. "DIAS:30" o "CREDITOS:100" o un número
+
+    if not id_tg or not id_vendedor or not cantidad:
+        return jsonify({
+            "status": "error",
+            "message": "Parámetros requeridos: ID_TG, ID_VENDEDOR, CANTIDAD"
+        }), 400
+
+    # Validar que el cliente exista en usuarios
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario (ID_TG) no encontrado"}), 404
+
+    fecha = now_iso()  # fecha automática
+
+    # Guardar cada compra como evento independiente.
+    conn = get_conn(COMPRAS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO compras (ID_TG, VENDEDOR, FECHA, COMPRO)
+        VALUES (?, ?, ?, ?)
+        """,
+        (id_tg, id_vendedor, fecha, cantidad)
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "ok",
+        "message": "Compra registrada",
+        "FECHA": fecha
+    }), 200
+
+@app.route("/historial", methods=["POST"])
+def historial():
+    # Requeridos
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    consulta = request_value("CONSULTA")
+    valor = request_value("VALOR")
+    plataforma = (request_value("PLATAFORMA") or "").upper().strip()
+
+    if not id_tg or not consulta or not valor or not plataforma:
+        return jsonify({
+            "status": "error",
+            "message": "Parámetros requeridos: ID_TG, CONSULTA, VALOR, PLATAFORMA"
+        }), 400
+
+    if plataforma not in {"TG", "WEB", "WSP"}:
+        return jsonify({
+            "status": "error",
+            "message": "PLATAFORMA inválida. Valores permitidos: TG, WEB, WSP"
+        }), 400
+
+    # Validar que el usuario exista
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario (ID_TG) no encontrado"}), 404
+
+    fecha = now_iso()  # fecha automática en servidor
+
+    # INSERT simple (NO REPLACE) para no sobrescribir registros anteriores
+    conn = get_conn(HIST_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO historial (ID_TG, consulta, valor, fecha, plataforma) VALUES (?, ?, ?, ?, ?)",
+        (id_tg, consulta, valor, fecha, plataforma)
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "ok",
+        "message": "Historial registrado",
+        "FECHA": fecha
+    }), 200
+
+
+# -------------------------
+# Reset y Estado
+# -------------------------
+@app.route("/reset", methods=["GET"])
+def reset_user():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request.args.get("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE usuarios
+        SET plan='FREE',
+            rol_tg='FREE',
+            rol_web='FREE',
+            rol_wsp='FREE',
+            creditos=5,
+            fecha_caducidad=NULL,
+            antispam=60,
+            estado='ACTIVO'
+        WHERE id_tg = ?
+        """,
+        (id_tg,)
+    )
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": "Usuario reseteado a valores por defecto"}), 200
+
+@app.route("/estado", methods=["GET"])
+def estado():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request.args.get("ID_TG")
+    valor = (request.args.get("valor") or "").upper()
+    if not id_tg or not valor:
+        return jsonify({"status": "error", "message": "Parámetros requeridos: ID_TG, valor"}), 400
+    if valor not in {"ACTIVO", "BANEADO"}:
+        return jsonify({"status": "error", "message": "valor inválido. Opciones: ACTIVO, BANEADO"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET estado = ? WHERE id_tg = ?", (valor, id_tg))
+    conn.commit(); conn.close()
+    return jsonify({"status": "ok", "message": f"Estado actualizado a {valor}"}), 200
+
+def _safe_parse_date(s: str):
+    if not s:
+        return None
+    try:
+        ds = s.strip()
+        if ds.endswith("Z"):
+            ds = ds[:-1]
+        return datetime.fromisoformat(ds)
+    except Exception:
+        return None
+
+@app.route("/estadisticas", methods=["GET"])
+def estadisticas():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    try:
+        # --------- HISTORIAL: conteos hoy / globales y tops ----------
+        today = now_utc().date()
+
+        # Leer historial
+        h_conn = get_conn(HIST_DB_PATH)
+        h_conn.row_factory = sqlite3.Row
+        h_cur = h_conn.cursor()
+        h_cur.execute("SELECT ID_TG, consulta, fecha FROM historial;")
+        h_rows = h_cur.fetchall()
+        h_conn.close()
+
+        consultas_globales = 0
+        consultas_hoy = 0
+        top_cmd_global = Counter()
+        top_cmd_hoy = Counter()
+        top_user_global = Counter()
+        top_user_hoy = Counter()
+
+        for r in h_rows:
+            consultas_globales += 1
+            consulta = (r["consulta"] or "").strip()
+            uid = (r["ID_TG"] or "").strip()
+            top_cmd_global[consulta] += 1
+            top_user_global[uid] += 1
+
+            d = _safe_parse_date(r["fecha"])
+            if d and d.date() == today:
+                consultas_hoy += 1
+                top_cmd_hoy[consulta] += 1
+                top_user_hoy[uid] += 1
+
+        # Top lists
+        top20_cmd_hoy = [{"consulta": k, "total": v} for k, v in top_cmd_hoy.most_common(20)]
+        top30_user_hoy = [{"ID_TG": k, "total": v} for k, v in top_user_hoy.most_common(30)]
+        top30_cmd_global = [{"consulta": k, "total": v} for k, v in top_cmd_global.most_common(30)]
+        top30_user_global = [{"ID_TG": k, "total": v} for k, v in top_user_global.most_common(30)]
+
+        # --------- USUARIOS: créditos, planes y días ----------
+        u_conn = get_conn(DB_PATH)
+        u_conn.row_factory = sqlite3.Row
+        u_cur = u_conn.cursor()
+        u_cur.execute("SELECT id_tg, creditos, plan, fecha_caducidad FROM usuarios;")
+        users = u_cur.fetchall()
+        u_conn.close()
+
+        total_users = len(users)
+        creditos_totales = 0
+        inactivos_5 = 0              # creditos == 5
+        creditos_cero = 0            # creditos == 0
+        cinco_o_1k = 0               # creditos == 5 OR creditos == 1000 (interpretación literal del ejemplo)
+        mas_1k = 0                   # creditos > 1000
+        mas_5 = 0                    # creditos > 5
+
+        planes_count = Counter()
+
+        # Días (suscripción)
+        now_dt = now_utc()
+        con_plan_activo = 0          # fecha_caducidad > now
+        sin_plan_activado = 0        # fecha_caducidad IS NULL
+        con_plan_vencido = 0         # fecha_caducidad <= now
+        rangos_dias = {
+            "0-7": 0,
+            "8-15": 0,
+            "16-30": 0,
+            "31-59": 0,
+            "60+": 0
+        }
+
+        # Listas para tops
+        top_creditos = []
+        top_dias = []
+
+        for u in users:
+            uid = u["id_tg"]
+            cred = int(u["creditos"] or 0)
+            plan = (u["plan"] or "FREE").upper()
+            fcad = _safe_parse_date(u["fecha_caducidad"])  # puede ser None
+
+            creditos_totales += cred
+            if cred == 5: inactivos_5 += 1
+            if cred == 0: creditos_cero += 1
+            if cred == 5 or cred == 1000: cinco_o_1k += 1
+            if cred > 1000: mas_1k += 1
+            if cred > 5: mas_5 += 1
+
+            planes_count[plan] += 1
+            top_creditos.append({"ID_TG": uid, "CREDITOS": cred})
+
+            # días restantes
+            if fcad is None:
+                sin_plan_activado += 1
+            else:
+                # normalizar a "estado"
+                if fcad <= now_dt:
+                    con_plan_vencido += 1
+                else:
+                    con_plan_activo += 1
+                    # días restantes (redondeo hacia arriba para que 0.1d cuente como 1)
+                    days_left = math.ceil((fcad - now_dt).total_seconds() / 86400.0)
+                    # rangos
+                    if 1 <= days_left <= 7:
+                        rangos_dias["0-7"] += 1
+                    elif 8 <= days_left <= 15:
+                        rangos_dias["8-15"] += 1
+                    elif 16 <= days_left <= 30:
+                        rangos_dias["16-30"] += 1
+                    elif 31 <= days_left <= 59:
+                        rangos_dias["31-59"] += 1
+                    elif days_left >= 60:
+                        rangos_dias["60+"] += 1
+                    top_dias.append({"ID_TG": uid, "DIAS": days_left})
+
+        # ordenamientos
+        top20_usuarios_mas_creditos = sorted(top_creditos, key=lambda x: x["CREDITOS"], reverse=True)[:20]
+        top30_usuarios_mas_dias = sorted(top_dias, key=lambda x: x["DIAS"], reverse=True)[:30]
+
+        # Bloques agregados
+        creditos_globales = {
+            "Usuarios_totales": total_users,
+            "Inactivos_5_credits": inactivos_5,
+            "Con_0_credits": creditos_cero,
+            "Con_5_o_1k_credits": cinco_o_1k,
+            "Con_mas_1k_credits": mas_1k,
+            "Con_credits_mas_5": mas_5,
+            "Creditos_totales": creditos_totales,
+            "Por_plan": {
+                "BASICO": planes_count.get("BASICO", 0),
+                "FREE": planes_count.get("FREE", 0),
+                "PREMIUM": planes_count.get("PREMIUM", 0),
+                "STANDARD": planes_count.get("STANDARD", 0),
+            }
+        }
+
+        dias_globales = {
+            "Usuarios_totales": total_users,
+            "Con_plan_activo": con_plan_activo,
+            "Sin_plan_activado": sin_plan_activado,
+            "Con_plan_vencido": con_plan_vencido,
+            "Rangos": {
+                "-_7_dias": rangos_dias["0-7"],
+                "8_15_dias": rangos_dias["8-15"],
+                "16_30_dias": rangos_dias["16-30"],
+                "31_59_dias": rangos_dias["31-59"],
+                "+_60_dias": rangos_dias["60+"]
+            }
+        }
+
+        # ---------- Render estilo texto para bots ----------
+        def fmt_num(n):  # separador de miles
+            return f"{n:,}".replace(",", ".")
+
+        lines = []
+        lines.append(f"CONSULTAS_HOY ➾ {fmt_num(consultas_hoy)}")
+        lines.append(f"CONSULTAS_GLOBALES ➾ {fmt_num(consultas_globales)}")
+        lines.append("")
+        lines.append("TOP 20 COMANDOS HOY:")
+        for item in top20_cmd_hoy:
+            c = item['consulta'] or "(vacío)"
+            lines.append(f"• {c} ➾ {fmt_num(item['total'])}")
+        lines.append("")
+        lines.append("TOP 30 USUARIOS DE HOY:")
+        for item in top30_user_hoy:
+            uid = item['ID_TG'] or "(desconocido)"
+            lines.append(f"• {uid} ➾ {fmt_num(item['total'])}")
+        lines.append("")
+        lines.append("TOP 30 COMANDOS GLOBALES:")
+        for item in top30_cmd_global:
+            c = item['consulta'] or "(vacío)"
+            lines.append(f"• {c} ➾ {fmt_num(item['total'])}")
+        lines.append("")
+        lines.append("TOP 30 USUARIOS GLOBALES:")
+        for item in top30_user_global:
+            uid = item['ID_TG'] or "(desconocido)"
+            lines.append(f"• {uid} ➾ {fmt_num(item['total'])}")
+        lines.append("")
+        lines.append("CREDITOS GLOBALES")
+        lines.append(f"• Usuarios totales ➾ {fmt_num(total_users)}")
+        lines.append(f"• Inactivos (5 créditos) ➾ {fmt_num(inactivos_5)}")
+        lines.append(f"• Con 0 créditos ➾ {fmt_num(creditos_cero)}")
+        lines.append(f"• Con 5 o 1k créditos ➾ {fmt_num(cinco_o_1k)}")
+        lines.append(f"• Con +1k créditos ➾ {fmt_num(mas_1k)}")
+        lines.append(f"• Con créditos (+5) ➾ {fmt_num(mas_5)}")
+        lines.append(f"• Créditos totales ➾ {fmt_num(creditos_totales)}")
+        lines.append(f"• BASICO ➾ {fmt_num(planes_count.get('BASICO', 0))} Usuarios")
+        lines.append(f"• FREE ➾ {fmt_num(planes_count.get('FREE', 0))} Usuarios")
+        lines.append(f"• PREMIUM ➾ {fmt_num(planes_count.get('PREMIUM', 0))} Usuarios")
+        lines.append(f"• STANDARD ➾ {fmt_num(planes_count.get('STANDARD', 0))} Usuarios")
+        lines.append("")
+        lines.append("TOP 20 USUARIOS CON MÁS CRÉDITOS")
+        for item in top20_usuarios_mas_creditos:
+            lines.append(f"• {item['ID_TG']} ➾ {fmt_num(item['CREDITOS'])}")
+        lines.append("")
+        lines.append("DIAS GLOBALES")
+        lines.append(f"• Usuarios totales ➾ {fmt_num(total_users)}")
+        lines.append(f"• Con plan activo ➾ {fmt_num(con_plan_activo)}")
+        lines.append(f"• Sin plan activado ➾ {fmt_num(sin_plan_activado)}")
+        lines.append(f"• Con plan vencido ➾ {fmt_num(con_plan_vencido)}")
+        lines.append(f"• Con - 7 días ➾ {fmt_num(rangos_dias['0-7'])}")
+        lines.append(f"• Con 8-15 días ➾ {fmt_num(rangos_dias['8-15'])}")
+        lines.append(f"• Con 16-30 días ➾ {fmt_num(rangos_dias['16-30'])}")
+        lines.append(f"• Con 31-59 días ➾ {fmt_num(rangos_dias['31-59'])}")
+        lines.append(f"• Con + 60 días ➾ {fmt_num(rangos_dias['60+'])}")
+        lines.append("")
+        lines.append("TOP 30 USUARIOS CON MÁS DÍAS")
+        for item in top30_usuarios_mas_dias:
+            lines.append(f"• {item['ID_TG']} ➾ {fmt_num(item['DIAS'])}")
+
+        render_text = "\n".join(lines)
+
+        # ---------- RESpuesta JSON estructurada ----------
+        data = {
+            "CONSULTAS_HOY": consultas_hoy,
+            "CONSULTAS_GLOBALES": consultas_globales,
+            "TOP_20_COMANDOS_HOY": top20_cmd_hoy,
+            "TOP_30_USUARIOS_HOY": top30_user_hoy,
+            "TOP_30_COMANDOS_GLOBALES": top30_cmd_global,
+            "TOP_30_USUARIOS_GLOBALES": top30_user_global,
+            "CREDITOS_GLOBALES": creditos_globales,
+            "TOP_20_USUARIOS_MAS_CREDITOS": top20_usuarios_mas_creditos,
+            "DIAS_GLOBALES": dias_globales,
+            "TOP_30_USUARIOS_MAS_DIAS": top30_usuarios_mas_dias,
+        }
+
+        return jsonify({
+            "status": "ok",
+            "message": "Estadísticas generadas",
+            "data": data,
+            "render": render_text
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error generando estadísticas: {e}"
+        }), 500
+
+@app.route("/compras_id", methods=["GET"])
+def compras_id():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(COMPRAS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO FROM compras WHERE ID_TG = ? ORDER BY FECHA DESC, ID DESC", (id_tg,))
+    rows = cur.fetchall()
+    conn.close()
+    data = [{"ID": r["ID"], "ID_TG": r["ID_TG"], "ID_VENDEDOR": r["VENDEDOR"], "FECHA": r["FECHA"], "CANTIDAD": r["COMPRO"]} for r in rows]
+    msg = "Compras listadas" if data else "Sin compras para este ID_TG"
+    return jsonify({"status": "ok", "message": msg, "data": data}), 200
+
+@app.route("/hist_venta_id", methods=["GET"])
+def hist_venta_id():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_vendedor = request_value("ID_VENDEDOR")
+    if not id_vendedor:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_VENDEDOR"}), 400
+    conn = get_conn(COMPRAS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO FROM compras WHERE VENDEDOR = ? ORDER BY FECHA DESC, ID DESC", (id_vendedor,))
+    rows = cur.fetchall()
+    conn.close()
+    data = [{"ID": r["ID"], "ID_TG": r["ID_TG"], "ID_VENDEDOR": r["VENDEDOR"], "FECHA": r["FECHA"], "CANTIDAD": r["COMPRO"]} for r in rows]
+    msg = "Ventas listadas" if data else "Sin ventas para este vendedor"
+    return jsonify({"status": "ok", "message": msg, "data": data}), 200
+
+@app.route("/")
+def index():
+    return {"status": "ok", "message": "NEXORA ONE API online"}
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    storage = get_storage_snapshot()
+    ok = all(item["exists"] for item in storage["items"])
+    metrics = get_health_metrics()
+    if metrics["errores"]["ultimos_15m"] >= 3:
+        ok = False
+    return jsonify(
+        {
+            "status": "ok" if ok else "warn",
+            "message": "NEXORA ONE healthcheck",
+            "storage": storage,
+            "metrics": metrics,
+            "runtime": get_runtime_status(),
+            "time": now_iso(),
+        }
+    ), 200
+
+
+@app.route("/debug/storage", methods=["GET"])
+def debug_storage():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    return jsonify({"status": "ok", "data": get_storage_snapshot()}), 200
+
+
+@app.route("/command_config", methods=["GET"])
+def command_config():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    slug = (request_value("slug") or "").strip().lower()
+    default_cost = request_value("default_cost", 1)
+    try:
+        default_cost = int(default_cost)
+    except Exception:
+        default_cost = 1
+    if not slug:
+        return jsonify({"status": "error", "message": "Falta el parámetro slug"}), 400
+    return jsonify({"status": "ok", "data": get_command_config_value(slug, default_cost)}), 200
+
+
+@app.route("/bot_catalog", methods=["GET"])
+def bot_catalog():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    return jsonify(
+        {
+            "status": "ok",
+            "data": {
+                "categories": get_catalog_categories(),
+                "commands": get_catalog_commands(),
+                "buy_packages": get_buy_packages(),
+                "settings": get_panel_settings(),
+            },
+        }
+    ), 200
+
+
+@app.route("/internal/admin/worker-event", methods=["POST"])
+def internal_admin_worker_event():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    event = str(request_value("event") or "").strip().lower()
+    detail = str(request_value("detail") or "").strip()
+    now = now_iso()
+    save_panel_setting_value("WORKER_LAST_SEEN", now)
+    save_panel_setting_value("WORKER_LAST_EVENT", event or "heartbeat")
+    if event == "polling_conflict":
+        save_panel_setting_value("WORKER_LAST_POLLING_CONFLICT", now)
+        log_audit_event("worker.polling_conflict", "telegram", detail[:300], actor=bot_actor())
+    elif event in {"started", "heartbeat"}:
+        save_panel_setting_value("WORKER_LAST_POLLING_CONFLICT", "")
+    return jsonify({"status": "ok", "event": event or "heartbeat", "time": now}), 200
+
+
+@app.route("/admin/clear-polling-alert", methods=["POST"])
+def admin_clear_polling_alert():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    save_panel_setting_value("WORKER_LAST_POLLING_CONFLICT", "")
+    log_audit_event("worker.polling_conflict.clear", "telegram", "alert cleared")
+    return redirect(url_for("admin_panel", section="sistema", flash="Alerta de polling limpiada."))
+
+
+# Templates del panel movidos a templates/admin_panel.html y templates/admin_login.html
+
+@app.route("/admin/panel", methods=["GET"])
+def admin_panel():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    flash = request.args.get("flash", "")
+    active_section = (request.args.get("section") or "resumen").strip().lower()
+    if active_section not in {"resumen", "buscar", "categorias", "comandos", "buy", "usuarios", "usuario", "compras", "historial", "vendedores", "ajustes", "solicitudes", "keys", "herramientas", "sistema", "estadisticas"}:
+        active_section = "resumen"
+    panel_role = panel_current_role()
+    if not panel_can_access_section(active_section, panel_role):
+        return redirect(url_for("admin_panel", section="resumen", flash="No tienes permiso para esa sección."))
+    seller_vendor_scope = panel_seller_vendor_scope()
+    categories = get_catalog_categories()
+    commands = get_catalog_commands()
+    settings = get_panel_settings()
+    health_summary = {"runtime": get_runtime_status(), "metrics": get_health_metrics()}
+    buy_packages = get_buy_packages()
+    global_q = request.args.get("gq", "")
+    global_results = get_global_search_results(global_q)
+    user_q = request.args.get("uq", "")
+    user_status = (request.args.get("ustatus") or "").upper()
+    user_plan = (request.args.get("uplan") or "").upper()
+    admin_users = get_admin_users(q=user_q, status=user_status, plan=user_plan, limit=250)
+    profile_user_id = (request.args.get("uid") or request.args.get("user_id") or "").strip()
+    user_profile = get_user_profile_snapshot(profile_user_id) if profile_user_id else {"user": None, "purchases": [], "history": [], "requests": [], "keys": [], "activity": []}
+    purchase_user = request.args.get("purchase_user", "")
+    purchase_vendor = request.args.get("purchase_vendor", "")
+    if seller_vendor_scope:
+        purchase_vendor = seller_vendor_scope
+    purchase_from = request.args.get("purchase_from", "")
+    purchase_to = request.args.get("purchase_to", "")
+    purchase_kind = request.args.get("purchase_kind", "")
+    purchase_status = (request.args.get("purchase_status") or "").upper()
+    purchases = get_admin_purchases(
+        user_id=purchase_user,
+        vendor_id=purchase_vendor,
+        date_from=purchase_from,
+        date_to=purchase_to,
+        kind=purchase_kind,
+        status=purchase_status,
+        limit=300,
+        exact_vendor=bool(seller_vendor_scope),
+    )
+    history_user = request.args.get("history_user", "")
+    history_command = request.args.get("history_command", "")
+    history_platform = request.args.get("history_platform", "")
+    history_from = request.args.get("history_from", "")
+    history_to = request.args.get("history_to", "")
+    history_q = request.args.get("history_q", "")
+    history_rows = get_admin_history(
+        user_id=history_user,
+        command=history_command,
+        platform=history_platform,
+        date_from=history_from,
+        date_to=history_to,
+        q=history_q,
+        limit=300,
+    )
+    history_commands = sorted({(row.get("consulta") or "").strip().lower() for row in get_admin_history(limit=1000) if row.get("consulta")})
+    vendor_q = request.args.get("vq", "")
+    selected_vendor = (request.args.get("vendor") or "").strip()
+    if seller_vendor_scope:
+        vendor_q = ""
+        selected_vendor = seller_vendor_scope
+    vendor_summary = get_vendor_sales_summary(q=vendor_q, limit=250, vendor_id=seller_vendor_scope)
+    if not selected_vendor and vendor_summary:
+        selected_vendor = vendor_summary[0]["vendedor"]
+    vendor_detail = get_vendor_sales_detail(selected_vendor, limit=120) if selected_vendor else []
+    vendor_total_sales = sum(int(item.get("total_ventas") or 0) for item in vendor_summary)
+    request_q = request.args.get("rq", "")
+    request_status = request.args.get("rstatus", "")
+    request_command = request.args.get("rcommand", "")
+    request_from = request.args.get("rfrom", "")
+    request_to = request.args.get("rto", "")
+    all_requests = get_request_items(limit=1000)
+    filtered_requests = get_request_items_filtered(
+        q=request_q,
+        status=request_status,
+        command=request_command,
+        date_from=request_from,
+        date_to=request_to,
+        limit=500,
+    )
+    pending_requests = [r for r in all_requests if (r.get("status") or "") == "pending"]
+    recent_requests = [r for r in all_requests if (r.get("status") or "") != "pending"]
+    filtered_pending_requests = [r for r in filtered_requests if (r.get("status") or "") == "pending"]
+    filtered_recent_requests = [r for r in filtered_requests if (r.get("status") or "") != "pending"]
+    request_counts = {
+        "pending": len([r for r in all_requests if (r.get("status") or "") == "pending"]),
+        "resolved": len([r for r in all_requests if (r.get("status") or "") == "resolved"]),
+        "cancelled": len([r for r in all_requests if (r.get("status") or "") == "cancelled"]),
+        "failed": len([r for r in all_requests if (r.get("status") or "") == "failed"]),
+    }
+    request_command_options = sorted({(r.get("command") or "").strip().lower() for r in all_requests if r.get("command")})
+    key_q = request.args.get("key_q", "")
+    key_tipo = request.args.get("key_tipo", "")
+    key_status = request.args.get("key_status", "")
+    key_items = get_key_items(q=key_q, tipo=key_tipo, status=key_status, limit=200)
+    key_redemptions = get_key_redemptions(limit=80)
+    key_counts = {
+        "total": len(get_key_items(limit=10000)),
+        "available": len(get_key_items(status="available", limit=10000)),
+        "used": len(get_key_items(status="used", limit=10000)),
+        "redemptions": len(key_redemptions),
+    }
+    q = request.args.get("q", "")
+    category_filter = request.args.get("category", "")
+    status_filter = request.args.get("status", "")
+    filtered_commands = filter_catalog_commands(commands, q=q, category=category_filter, status=status_filter)
+    daily_backups = get_daily_backups(limit=10)
+    latest_backup = daily_backups[0] if daily_backups else None
+    audit_action = request.args.get("audit_action", "")
+    audit_actor = request.args.get("audit_actor", "")
+    audit_target = request.args.get("audit_target", "")
+    try:
+        cmd_page = int(request.args.get("page") or 1)
+    except Exception:
+        cmd_page = 1
+    paged_commands, cmd_page, cmd_total_pages, cmd_total = paginate_items(filtered_commands, cmd_page, per_page=10)
+    return render_template(
+        "admin_panel.html",
+        categories=categories,
+        commands=commands,
+        filtered_commands=paged_commands,
+        buy_packages=buy_packages,
+        admin_users=admin_users,
+        profile_user_id=profile_user_id,
+        user_profile=user_profile,
+        vendor_summary=vendor_summary,
+        vendor_detail=vendor_detail,
+        vendor_total_sales=vendor_total_sales,
+        vendor_q=vendor_q,
+        selected_vendor=selected_vendor,
+        settings=settings,
+        previews=build_panel_previews(settings, buy_packages, commands),
+        dashboard=get_dashboard_snapshot(vendor_id=seller_vendor_scope),
+        global_q=global_q,
+        global_results=global_results,
+        storage=get_storage_snapshot(),
+        health_summary=health_summary,
+        daily_backups=daily_backups,
+        latest_backup=latest_backup,
+        panel_role=panel_role,
+        panel_user=session.get("panel_user") or PANEL_USER,
+        seller_vendor_scope=seller_vendor_scope,
+        panel_nav_items=panel_nav_items_for_role(panel_role),
+        panel_accounts=get_panel_accounts(),
+        panel_roles=sorted(PANEL_ROLES),
+        history_cleanup_preview=get_history_cleanup_preview(),
+        error_logs=get_error_logs(limit=50),
+        audit_logs=get_audit_logs(limit=80, action=audit_action, actor=audit_actor, target=audit_target),
+        audit_action=audit_action,
+        audit_actor=audit_actor,
+        audit_target=audit_target,
+        purchases=purchases,
+        purchase_user=purchase_user,
+        purchase_vendor=purchase_vendor,
+        purchase_from=purchase_from,
+        purchase_to=purchase_to,
+        purchase_kind=purchase_kind,
+        purchase_status=purchase_status,
+        purchase_statuses=sorted(PURCHASE_STATUSES),
+        history_rows=history_rows,
+        history_user=history_user,
+        history_command=history_command,
+        history_platform=history_platform,
+        history_from=history_from,
+        history_to=history_to,
+        history_q=history_q,
+        history_commands=history_commands,
+        pending_requests=pending_requests,
+        recent_requests=recent_requests,
+        filtered_pending_requests=filtered_pending_requests,
+        filtered_recent_requests=filtered_recent_requests,
+        request_counts=request_counts,
+        request_command_options=request_command_options,
+        request_q=request_q,
+        request_status=request_status,
+        request_command=request_command,
+        request_from=request_from,
+        request_to=request_to,
+        request_templates=get_request_templates(),
+        key_items=key_items,
+        key_redemptions=key_redemptions,
+        key_counts=key_counts,
+        key_q=key_q,
+        key_tipo=key_tipo,
+        key_status=key_status,
+        user_q=user_q,
+        user_status=user_status,
+        user_plan=user_plan,
+        q=q,
+        category_filter=category_filter,
+        status_filter=status_filter,
+        cmd_page=cmd_page,
+        cmd_total_pages=cmd_total_pages,
+        cmd_total=cmd_total,
+        active_section=active_section,
+        flash=flash,
+    )
+
+
+@app.route("/admin/category/save", methods=["POST"])
+def admin_save_category():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    slug = (request.form.get("slug") or "").strip().lower()
+    original_slug = (request.form.get("original_slug") or slug).strip().lower()
+    name = (request.form.get("name") or "").strip()
+    description = (request.form.get("description") or "").strip()
+    icon = (request.form.get("icon") or "").strip()[:12]
+    try:
+        sort_order = int(request.form.get("sort_order") or 0)
+    except Exception:
+        sort_order = 0
+    is_active = 1 if (request.form.get("is_active") or "1") == "1" else 0
+    if not slug or not name:
+        return redirect(url_for("admin_panel", section="categorias", flash="Categoría inválida."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM command_categories WHERE slug = ?",
+        (original_slug,),
+    )
+    exists = cur.fetchone()
+    if exists:
+        cur.execute(
+            """
+            UPDATE command_categories
+            SET slug = ?, name = ?, description = ?, icon = ?, sort_order = ?, is_active = ?
+            WHERE slug = ?
+            """,
+            (slug, name, description, icon, sort_order, is_active, original_slug),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO command_categories (slug, name, description, icon, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (slug, name, description, icon, sort_order, is_active),
+        )
+    conn.commit()
+    conn.close()
+    log_audit_event("category.save", slug, f"name={name}; icon={icon}; active={is_active}; order={sort_order}")
+    return redirect(url_for("admin_panel", section="categorias", flash=f"Categoría {name} guardada."))
+
+
+@app.route("/admin/category/delete", methods=["POST"])
+def admin_delete_category():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    slug = (request.form.get("slug") or "").strip().lower()
+    if not slug:
+        return redirect(url_for("admin_panel", section="categorias", flash="Categoría inválida."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM command_categories WHERE slug = ?", (slug,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return redirect(url_for("admin_panel", section="categorias", flash=f"No encontré la categoría {slug}."))
+
+    category_id, category_name = row[0], row[1]
+    cur.execute("UPDATE command_catalog SET category_id = NULL WHERE category_id = ?", (category_id,))
+    cur.execute("DELETE FROM command_categories WHERE id = ?", (category_id,))
+    conn.commit()
+    conn.close()
+    log_audit_event("category.delete", slug, f"name={category_name}; commands_detached=true")
+    return redirect(url_for("admin_panel", section="categorias", flash=f"Categoría {category_name} eliminada. Sus comandos quedaron sin categoría."))
+
+
+@app.route("/admin/command/save", methods=["POST"])
+def admin_save_command():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    slug = (request.form.get("slug") or "").strip().lower()
+    name = (request.form.get("name") or "").strip()
+    description = (request.form.get("description") or "").strip()
+    validation = _command_validation_from_form()
+    required_plan = _command_required_plan_from_form()
+    stored_description = _pack_command_description(description, validation, required_plan)
+    usage_hint = (request.form.get("usage_hint") or "").strip()
+    category_id = request.form.get("category_id") or None
+    try:
+        category_id = int(category_id) if category_id else None
+    except Exception:
+        category_id = None
+    try:
+        cost = int(request.form.get("cost") or 0)
+    except Exception:
+        cost = 0
+    try:
+        sort_order = int(request.form.get("sort_order") or 0)
+    except Exception:
+        sort_order = 0
+    is_active = 1 if (request.form.get("is_active") or "1") == "1" else 0
+    if not slug or not name:
+        return redirect(url_for("admin_panel", section="comandos", flash="Comando inválido."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO command_catalog (slug, name, description, category_id, cost, is_active, sort_order, usage_hint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+            name = excluded.name,
+            description = excluded.description,
+            category_id = excluded.category_id,
+            cost = excluded.cost,
+            is_active = excluded.is_active,
+            sort_order = excluded.sort_order,
+            usage_hint = excluded.usage_hint
+        """,
+        (slug, name, stored_description, category_id, max(0, cost), is_active, sort_order, usage_hint),
+    )
+    conn.commit()
+    conn.close()
+    log_audit_event("command.save", slug, f"name={name}; cost={max(0, cost)}; active={is_active}; category_id={category_id}; required_plan={required_plan}")
+    return redirect(url_for("admin_panel", section="comandos", flash=f"Comando /{slug} guardado."))
+
+
+@app.route("/admin/command/delete", methods=["POST"])
+def admin_delete_command():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    slug = (request.form.get("slug") or "").strip().lower().lstrip("/")
+    if not slug:
+        return redirect(url_for("admin_panel", section="comandos", flash="Comando inválido."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM command_catalog WHERE slug = ?", (slug,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return redirect(url_for("admin_panel", section="comandos", flash=f"No encontré /{slug}."))
+    command_name = row[0]
+    cur.execute("DELETE FROM command_catalog WHERE slug = ?", (slug,))
+    conn.commit()
+    conn.close()
+    log_audit_event("command.delete", slug, f"name={command_name}")
+    return redirect(url_for("admin_panel", section="comandos", flash=f"Comando /{slug} eliminado."))
+
+
+@app.route("/admin/command/duplicate", methods=["POST"])
+def admin_duplicate_command():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    source_slug = (request.form.get("source_slug") or "").strip().lower()
+    new_slug = (request.form.get("new_slug") or "").strip().lower().lstrip("/")
+    new_name = (request.form.get("new_name") or "").strip()
+    if not source_slug or not new_slug:
+        return redirect(url_for("admin_panel", section="comandos", flash="Falta slug origen o destino para duplicar."))
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT slug, name, description, category_id, cost, is_active, sort_order, usage_hint
+        FROM command_catalog
+        WHERE slug = ?
+        """,
+        (source_slug,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return redirect(url_for("admin_panel", section="comandos", flash=f"No encontré /{source_slug} para duplicar."))
+    cur.execute("SELECT 1 FROM command_catalog WHERE slug = ?", (new_slug,))
+    if cur.fetchone():
+        conn.close()
+        return redirect(url_for("admin_panel", section="comandos", flash=f"Ya existe /{new_slug}."))
+    cur.execute(
+        """
+        INSERT INTO command_catalog (slug, name, description, category_id, cost, is_active, sort_order, usage_hint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_slug,
+            new_name or f"{row['name']} copia",
+            row["description"],
+            row["category_id"],
+            row["cost"],
+            row["is_active"],
+            int(row["sort_order"] or 0) + 1,
+            row["usage_hint"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+    log_audit_event("command.duplicate", new_slug, f"source={source_slug}")
+    return redirect(url_for("admin_panel", section="comandos", flash=f"Comando /{source_slug} duplicado como /{new_slug}."))
+
+
+@app.route("/admin/command/import", methods=["POST"])
+def admin_import_commands():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+
+    bulk_text = (request.form.get("bulk_commands") or "").strip()
+    category_id = request.form.get("bulk_category_id") or None
+    try:
+        category_id = int(category_id) if category_id else None
+    except Exception:
+        category_id = None
+
+    if not bulk_text:
+        return redirect(url_for("admin_panel", section="comandos", flash="Pega al menos una línea para importar."))
+
+    rows, errors = parse_bulk_command_rows(bulk_text)
+    if errors:
+        return redirect(url_for("admin_panel", section="comandos", flash="Importación cancelada: " + " | ".join(errors[:4])))
+    if not rows:
+        return redirect(url_for("admin_panel", section="comandos", flash="No se encontraron líneas válidas para importar."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    created = 0
+    updated = 0
+    for item in rows:
+        cur.execute("SELECT 1 FROM command_catalog WHERE slug = ?", (item["slug"],))
+        exists = cur.fetchone() is not None
+        cur.execute(
+            """
+            INSERT INTO command_catalog (slug, name, description, category_id, cost, is_active, sort_order, usage_hint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                category_id = excluded.category_id,
+                cost = excluded.cost,
+                is_active = excluded.is_active,
+                sort_order = excluded.sort_order,
+                usage_hint = excluded.usage_hint
+            """,
+            (
+                item["slug"],
+                item["name"],
+                item["description"],
+                category_id,
+                item["cost"],
+                item["is_active"],
+                item["sort_order"],
+                item["usage_hint"],
+            ),
+        )
+        if exists:
+            updated += 1
+        else:
+            created += 1
+    conn.commit()
+    conn.close()
+    log_audit_event("command.import", "bulk", f"created={created}; updated={updated}; category_id={category_id}")
+    return redirect(
+        url_for(
+            "admin_panel",
+            section="comandos",
+            flash=f"Importación lista: {created} creados, {updated} actualizados.",
+        )
+    )
+
+
+@app.route("/admin/buy/save", methods=["POST"])
+def admin_save_buy_package():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    pkg_id = request.form.get("id")
+    kind = (request.form.get("kind") or "credits").strip()
+    group_slug = (request.form.get("group_slug") or "").strip().lower()
+    badge = (request.form.get("badge") or "").strip()
+    title = (request.form.get("title") or "").strip()
+    subtitle = (request.form.get("subtitle") or "").strip()
+    line_text = (request.form.get("line_text") or "").strip()
+    try:
+        sort_order = int(request.form.get("sort_order") or 0)
+    except Exception:
+        sort_order = 0
+    is_active = 1 if (request.form.get("is_active") or "1") == "1" else 0
+    if kind not in {"credits", "days"} or not group_slug or not title or not line_text:
+        return redirect(url_for("admin_panel", section="buy", flash="Paquete inválido."))
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    if pkg_id:
+        cur.execute(
+            """
+            UPDATE buy_packages
+            SET kind = ?, group_slug = ?, badge = ?, title = ?, subtitle = ?, line_text = ?, sort_order = ?, is_active = ?
+            WHERE id = ?
+            """,
+            (kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active, pkg_id),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO buy_packages (kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active),
+        )
+    conn.commit()
+    conn.close()
+    log_audit_event("buy.save", str(pkg_id or "new"), f"kind={kind}; group={group_slug}; title={title}; active={is_active}")
+    return redirect(url_for("admin_panel", section="buy", flash="Paquete de /buy guardado."))
+
+
+@app.route("/admin/setting/save", methods=["POST"])
+def admin_save_setting():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    key = (request.form.get("key") or "").strip()
+    value = (request.form.get("value") or "").strip()
+    if not key:
+        return redirect(url_for("admin_panel", section="ajustes", flash="Ajuste inválido."))
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO panel_settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+    log_audit_event("setting.save", key, "value updated")
+    return redirect(url_for("admin_panel", section="ajustes", flash=f"Ajuste {key} guardado."))
+
+
+@app.route("/admin/setting/upload", methods=["POST"])
+def admin_upload_visual_setting():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    key = (request.form.get("key") or "").strip().upper()
+    uploaded = request.files.get("image")
+    if key not in VISUAL_IMAGE_KEYS:
+        return redirect(url_for("admin_panel", section="ajustes", flash="Ajuste visual inválido."))
+    if not uploaded or not uploaded.filename:
+        return redirect(url_for("admin_panel", section="ajustes", flash="Selecciona una imagen."))
+    original = secure_filename(uploaded.filename)
+    if not is_allowed_visual_upload(original):
+        return redirect(url_for("admin_panel", section="ajustes", flash="Formato inválido. Usa JPG, PNG, WEBP o GIF."))
+    ext = os.path.splitext(original)[1].lower()
+    filename = f"{key.lower()}-{now_utc().strftime('%Y%m%d%H%M%S')}{ext}"
+    try:
+        put_image(filename, uploaded.stream.read(MAX_IMAGE_BYTES + 1))
+    except ValueError as exc:
+        return redirect(url_for("admin_panel", section="ajustes", flash=str(exc)))
+    public_url = f"{public_base_url()}{url_for('panel_public_asset', filename=filename)}"
+    save_panel_setting_value(key, public_url)
+    log_audit_event("setting.upload", key, filename)
+    return redirect(url_for("admin_panel", section="ajustes", flash=f"Imagen subida para {key}."))
+
+
+@app.route("/admin/request-template/save", methods=["POST"])
+def admin_save_request_template():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    key = (request.form.get("key") or "").strip().lower()
+    command = (request.form.get("command") or "").strip().lower().lstrip("/")
+    text = (request.form.get("text") or "").strip()
+    billable = 1 if (request.form.get("billable") or "0") == "1" else 0
+    if not key or not text:
+        return redirect(url_for("admin_panel", section="solicitudes", flash="Plantilla inválida."))
+    init_requests_db()
+    conn = get_conn(REQUESTS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO request_templates (key, command, text, billable)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET command = excluded.command, text = excluded.text, billable = excluded.billable
+        """,
+        (key, command, text, billable),
+    )
+    conn.commit()
+    conn.close()
+    log_audit_event("request_template.save", key, f"command={command or '*'}; billable={billable}")
+    return redirect(url_for("admin_panel", section="solicitudes", flash=f"Plantilla {key} guardada."))
+
+
+@app.route("/admin/request/action", methods=["POST"])
+def admin_request_action():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    try:
+        request_id = int(request.form.get("request_id") or 0)
+    except Exception:
+        request_id = 0
+    action = (request.form.get("action") or "").strip().lower()
+    note = (request.form.get("note") or "").strip()
+    if request_id <= 0:
+        flash = "Solicitud inválida."
+    elif action in {"template", "template_resolve"}:
+        ok, flash = send_request_template_from_panel(
+            request_id,
+            request.form.get("template_key", ""),
+            resolve=action == "template_resolve",
+        )
+        if not ok:
+            flash = flash or "No se pudo enviar la plantilla."
+    else:
+        ok, flash = update_request_status_from_panel(request_id, action, note)
+        if not ok:
+            flash = flash or "No se pudo actualizar la solicitud."
+    return redirect(
+        url_for(
+            "admin_panel",
+            section="solicitudes",
+            rq=request.form.get("rq", ""),
+            rstatus=request.form.get("rstatus", ""),
+            rcommand=request.form.get("rcommand", ""),
+            rfrom=request.form.get("rfrom", ""),
+            rto=request.form.get("rto", ""),
+            flash=flash,
+        )
+    )
+
+
+@app.route("/admin/export/solicitudes.csv", methods=["GET"])
+def admin_export_requests_csv():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    rows = get_request_items_filtered(
+        q=request.args.get("rq", ""),
+        status=request.args.get("rstatus", ""),
+        command=request.args.get("rcommand", ""),
+        date_from=request.args.get("rfrom", ""),
+        date_to=request.args.get("rto", ""),
+        limit=10000,
+    )
+    return _csv_response(
+        "nexora-solicitudes.csv",
+        rows,
+        [
+            "id", "user_id", "username", "command", "payload", "status", "cost",
+            "created_at", "resolved_at", "resolved_by", "resolution_note",
+            "attachment_type", "attachment_file_id", "attachment_file_name", "attachment_caption",
+        ],
+    )
+
+
+@app.route("/admin/export/solicitudes.json", methods=["GET"])
+def admin_export_requests_json():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    filters = {
+        "rq": request.args.get("rq", ""),
+        "rstatus": request.args.get("rstatus", ""),
+        "rcommand": request.args.get("rcommand", ""),
+        "rfrom": request.args.get("rfrom", ""),
+        "rto": request.args.get("rto", ""),
+    }
+    rows = get_request_items_filtered(
+        q=filters["rq"],
+        status=filters["rstatus"],
+        command=filters["rcommand"],
+        date_from=filters["rfrom"],
+        date_to=filters["rto"],
+        limit=10000,
+    )
+    return _json_download_response(
+        "nexora-solicitudes.json",
+        {"exported_at": now_iso(), "filters": filters, "total": len(rows), "data": rows},
+    )
+
+
+@app.route("/admin/user/message", methods=["POST"])
+def admin_user_message():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    id_tg = (request.form.get("id_tg") or "").strip()
+    text = (request.form.get("message") or "").strip()
+    if not id_tg or not text:
+        return redirect(url_for("admin_panel", section="usuario", uid=id_tg, flash="Falta ID o mensaje."))
+    ok = send_telegram_message_sync(id_tg, f"<b>{html_escape(panel_brand())} MENSAJE</b>\n\n{html_escape(text)}")
+    log_audit_event("user.message", id_tg, f"sent={ok}; len={len(text)}")
+    flash = "Mensaje enviado." if ok else "No se pudo enviar el mensaje. Quizá el usuario bloqueó el bot."
+    return redirect(url_for("admin_panel", section="usuario", uid=id_tg, flash=flash))
+
+
+@app.route("/admin/keys/generate", methods=["POST"])
+def admin_generate_keys():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    tipo = (request.form.get("tipo") or "").strip().lower()
+    try:
+        cantidad = int(request.form.get("cantidad") or 0)
+        usos = int(request.form.get("usos") or 1)
+        total = int(request.form.get("total") or 1)
+    except Exception:
+        return redirect(url_for("admin_panel", section="keys", flash="Cantidad, usos y total deben ser números."))
+    if tipo not in {"dias", "creditos"}:
+        return redirect(url_for("admin_panel", section="keys", flash="Tipo inválido. Usa días o créditos."))
+    if cantidad <= 0 or usos <= 0 or total <= 0:
+        return redirect(url_for("admin_panel", section="keys", flash="Cantidad, usos y total deben ser mayores a 0."))
+    if total > 100:
+        return redirect(url_for("admin_panel", section="keys", flash="No puedes generar más de 100 keys por lote."))
+
+    admin_ids = sorted(configured_admin_ids())
+    creador_raw = next((value for value in admin_ids if value.isdigit()), "0")
+    try:
+        created = create_license_keys(tipo, cantidad, usos, total, int(creador_raw))
+    except RuntimeError as exc:
+        return redirect(url_for("admin_panel", section="keys", flash=str(exc)))
+    preview = ", ".join(created[:8])
+    if len(created) > 8:
+        preview += f" y {len(created) - 8} más"
+    actor = session.get("panel_user") or "panel"
+    log_audit_event("keys.generate", tipo, f"cantidad={cantidad}; usos={usos}; total={total}; actor={actor}")
+    return redirect(url_for("admin_panel", section="keys", flash=f"Keys generadas: {preview}"))
+
+
+@app.route("/admin/keys/update", methods=["POST"])
+def admin_update_key():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    key = (request.form.get("key") or "").strip().upper()
+    action = (request.form.get("action") or "").strip().lower()
+    try:
+        usos = max(0, int(request.form.get("usos") or 0))
+    except Exception:
+        return redirect(url_for("admin_panel", section="keys", flash="Usos inválidos."))
+    if not key:
+        return redirect(url_for("admin_panel", section="keys", flash="Key inválida."))
+    if action == "revoke":
+        usos = 0
+    elif action != "set_uses":
+        return redirect(url_for("admin_panel", section="keys", flash="Acción inválida."))
+    if not update_key_uses(key, usos):
+        return redirect(url_for("admin_panel", section="keys", flash=f"Key {key} no encontrada."))
+    log_audit_event("keys.update", key, f"action={action}; usos={usos}")
+    msg = f"Key {key} revocada." if action == "revoke" else f"Key {key} actualizada a {usos} usos."
+    return redirect(url_for("admin_panel", section="keys", flash=msg))
+
+
+@app.route("/admin/keys/delete", methods=["POST"])
+def admin_delete_key():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    key = (request.form.get("key") or "").strip().upper()
+    if not key:
+        return redirect(url_for("admin_panel", section="keys", flash="Key inválida."))
+
+    init_keys_db()
+    conn = get_conn(KEYS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT key, tipo, cantidad, usos FROM keys WHERE key = ?", (key,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return redirect(url_for("admin_panel", section="keys", flash=f"Key {key} no encontrada."))
+    cur.execute("DELETE FROM redemptions WHERE key = ?", (key,))
+    deleted_redemptions = cur.rowcount
+    cur.execute("DELETE FROM keys WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+    log_audit_event("keys.delete", key, f"tipo={row[1]}; cantidad={row[2]}; usos={row[3]}; redemptions={deleted_redemptions}")
+    return redirect(url_for("admin_panel", section="keys", flash=f"Key {key} eliminada."))
+
+
+@app.route("/admin/user/save", methods=["POST"])
+def admin_save_user():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    id_tg = (request.form.get("id_tg") or "").strip()
+    plan = (request.form.get("plan") or "FREE").strip().upper()
+    rol_tg = (request.form.get("rol_tg") or "FREE").strip().upper()
+    estado = (request.form.get("estado") or "ACTIVO").strip().upper()
+    try:
+        creditos = max(0, int(request.form.get("creditos") or 0))
+    except Exception:
+        creditos = 0
+    try:
+        antispam = max(0, int(request.form.get("antispam") or 0))
+    except Exception:
+        antispam = 0
+    if not id_tg:
+        return redirect(url_for("admin_panel", section="usuarios", flash="Usuario inválido."))
+    if plan not in PLANES_VALIDOS:
+        plan = "FREE"
+    if rol_tg not in ROLES_VALIDOS:
+        rol_tg = "FREE"
+    if estado not in {"ACTIVO", "BANEADO"}:
+        estado = "ACTIVO"
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE usuarios
+        SET creditos = ?, plan = ?, rol_tg = ?, estado = ?, antispam = ?
+        WHERE id_tg = ?
+        """,
+        (creditos, plan, rol_tg, estado, antispam, id_tg),
+    )
+    conn.commit()
+    conn.close()
+    log_audit_event("user.save", id_tg, f"plan={plan}; rol={rol_tg}; estado={estado}; creditos={creditos}; antispam={antispam}")
+    return redirect(url_for("admin_panel", section="usuarios", flash=f"Usuario {id_tg} actualizado."))
+
+
+@app.route("/admin/user/action", methods=["POST"])
+def admin_user_action():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SOPORTE")
+    if gate:
+        return gate
+    id_tg = (request.form.get("id_tg") or "").strip()
+    action = (request.form.get("action") or "").strip().lower()
+    if action == "owner" and panel_current_role() != "FUNDADOR":
+        return redirect(url_for("admin_panel", section="usuarios", flash="Solo FUNDADOR puede hacer dueño a un usuario."))
+    if not id_tg:
+        return redirect(url_for("admin_panel", section="usuarios", flash="Usuario inválido."))
+    row = get_user_by_id(id_tg)
+    if not row:
+        return redirect(url_for("admin_panel", section="usuarios", flash=f"Usuario {id_tg} no existe."))
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    flash = f"Acción aplicada a {id_tg}."
+    if action == "owner":
+        cur.execute(
+            """
+            UPDATE usuarios
+            SET rol_tg='FUNDADOR', rol_web='FUNDADOR', rol_wsp='FUNDADOR',
+                plan='PREMIUM', estado='ACTIVO', antispam=0,
+                creditos=CASE WHEN COALESCE(creditos, 0) < 999999 THEN 999999 ELSE creditos END,
+                fecha_caducidad='2099-12-31T23:59:59Z'
+            WHERE id_tg=?
+            """,
+            (id_tg,),
+        )
+        flash = f"Usuario {id_tg} ahora es FUNDADOR."
+    elif action == "ban":
+        cur.execute("UPDATE usuarios SET estado='BANEADO' WHERE id_tg=?", (id_tg,))
+        flash = f"Usuario {id_tg} baneado."
+    elif action == "unban":
+        cur.execute("UPDATE usuarios SET estado='ACTIVO' WHERE id_tg=?", (id_tg,))
+        flash = f"Usuario {id_tg} activo."
+    elif action.startswith("credits_"):
+        try:
+            amount = int(action.split("_", 1)[1])
+        except Exception:
+            amount = 0
+        cur.execute("UPDATE usuarios SET creditos=COALESCE(creditos, 0) + ? WHERE id_tg=?", (amount, id_tg))
+        flash = f"Se agregaron {amount} créditos a {id_tg}."
+    elif action.startswith("plan_"):
+        try:
+            days = int(action.split("_", 1)[1])
+        except Exception:
+            days = 0
+        now = now_utc()
+        current = row["fecha_caducidad"]
+        try:
+            base = parse_iso(current) if current else now
+        except Exception:
+            base = now
+        if base < now:
+            base = now
+        new_iso = (base + timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
+        cur.execute(
+            "UPDATE usuarios SET plan='PREMIUM', estado='ACTIVO', fecha_caducidad=?, antispam=5 WHERE id_tg=?",
+            (new_iso, id_tg),
+        )
+        flash = f"Se agregaron {days} días premium a {id_tg}."
+    else:
+        flash = "Acción no reconocida."
+    conn.commit()
+    conn.close()
+    log_audit_event("user.action", id_tg, action)
+    return redirect(url_for("admin_panel", section="usuarios", uq=id_tg, flash=flash))
+
+
+@app.route("/admin/export/compras.csv", methods=["GET"])
+def admin_export_purchases_csv():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    seller_vendor = panel_seller_vendor_scope()
+    rows = get_admin_purchases(
+        user_id=request.args.get("purchase_user", ""),
+        vendor_id=seller_vendor or request.args.get("purchase_vendor", ""),
+        date_from=request.args.get("purchase_from", ""),
+        date_to=request.args.get("purchase_to", ""),
+        kind=request.args.get("purchase_kind", ""),
+        status=request.args.get("purchase_status", ""),
+        limit=10000,
+        exact_vendor=bool(seller_vendor),
+    )
+    return _csv_response("nexora-compras.csv", rows, ["ID", "ID_TG", "VENDEDOR", "FECHA", "COMPRO", "ESTADO", "NOTAS", "COMPROBANTE"])
+
+
+@app.route("/admin/export/compras.json", methods=["GET"])
+def admin_export_purchases_json():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    seller_vendor = panel_seller_vendor_scope()
+    filters = {
+        "purchase_user": request.args.get("purchase_user", ""),
+        "purchase_vendor": seller_vendor or request.args.get("purchase_vendor", ""),
+        "purchase_from": request.args.get("purchase_from", ""),
+        "purchase_to": request.args.get("purchase_to", ""),
+        "purchase_kind": request.args.get("purchase_kind", ""),
+        "purchase_status": request.args.get("purchase_status", ""),
+    }
+    rows = get_admin_purchases(
+        user_id=filters["purchase_user"],
+        vendor_id=filters["purchase_vendor"],
+        date_from=filters["purchase_from"],
+        date_to=filters["purchase_to"],
+        kind=filters["purchase_kind"],
+        status=filters["purchase_status"],
+        limit=10000,
+        exact_vendor=bool(seller_vendor),
+    )
+    return _json_download_response(
+        "nexora-compras.json",
+        {"exported_at": now_iso(), "filters": filters, "total": len(rows), "data": rows},
+    )
+
+
+@app.route("/admin/purchase/create", methods=["POST"])
+def admin_create_purchase():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SELLER")
+    if gate:
+        return gate
+    id_tg = (request.form.get("id_tg") or "").strip()
+    vendedor = (request.form.get("vendedor") or panel_current_user()).strip()
+    seller_vendor = panel_seller_vendor_scope()
+    if seller_vendor:
+        vendedor = seller_vendor
+    compro = (request.form.get("compro") or "").strip()
+    estado = (request.form.get("estado") or "ENTREGADA").strip().upper()
+    notas = (request.form.get("notas") or "").strip()
+    comprobante = (request.form.get("comprobante") or "").strip()
+    if estado not in PURCHASE_STATUSES:
+        estado = "ENTREGADA"
+    if not id_tg or not compro:
+        return redirect(url_for("admin_panel", section="compras", flash="Falta ID usuario o compra."))
+    purchase_id = record_purchase_event(id_tg, vendedor, compro, estado=estado, notas=notas, comprobante=comprobante)
+    log_audit_event("purchase.create", str(purchase_id), f"user={id_tg}; vendedor={vendedor}; compro={compro}")
+    return redirect(url_for("admin_panel", section="compras", purchase_user=id_tg, flash=f"Compra #{purchase_id} creada."))
+
+
+@app.route("/admin/purchase/update", methods=["POST"])
+def admin_update_purchase():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR", "SELLER")
+    if gate:
+        return gate
+    purchase_id = (request.form.get("purchase_id") or "").strip()
+    estado = (request.form.get("estado") or "ENTREGADA").strip().upper()
+    notas = (request.form.get("notas") or "").strip()
+    comprobante = (request.form.get("comprobante") or "").strip()
+    if estado not in PURCHASE_STATUSES:
+        estado = "ENTREGADA"
+    try:
+        pid = int(purchase_id)
+    except Exception:
+        return redirect(url_for("admin_panel", section="compras", flash="Compra inválida."))
+    seller_vendor = panel_seller_vendor_scope()
+    conn = get_conn(COMPRAS_DB_PATH)
+    cur = conn.cursor()
+    if seller_vendor:
+        cur.execute("SELECT VENDEDOR FROM compras WHERE ID = ?", (pid,))
+        row = cur.fetchone()
+        if not row or str(row[0] or "").strip() != seller_vendor:
+            conn.close()
+            return redirect(url_for("admin_panel", section="compras", flash="No puedes editar ventas de otro vendedor."))
+    cur.execute(
+        """
+        UPDATE compras
+        SET ESTADO = ?, NOTAS = ?, COMPROBANTE = ?
+        WHERE ID = ?
+        """,
+        (estado, notas, comprobante, pid),
+    )
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    if changed:
+        log_audit_event("purchase.update", str(pid), f"estado={estado}; notas={notas[:80]}; comprobante={comprobante[:80]}")
+        flash = f"Compra #{pid} actualizada."
+    else:
+        flash = f"Compra #{pid} no encontrada."
+    return redirect(
+        url_for(
+            "admin_panel",
+            section="compras",
+            purchase_user=request.form.get("purchase_user", ""),
+            purchase_vendor=request.form.get("purchase_vendor", ""),
+            purchase_from=request.form.get("purchase_from", ""),
+            purchase_to=request.form.get("purchase_to", ""),
+            purchase_kind=request.form.get("purchase_kind", ""),
+            purchase_status=request.form.get("purchase_status", ""),
+            flash=flash,
+        )
+    )
+
+
+@app.route("/admin/export/historial.csv", methods=["GET"])
+def admin_export_history_csv():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    rows = get_admin_history(
+        user_id=request.args.get("history_user", ""),
+        command=request.args.get("history_command", ""),
+        platform=request.args.get("history_platform", ""),
+        date_from=request.args.get("history_from", ""),
+        date_to=request.args.get("history_to", ""),
+        q=request.args.get("history_q", ""),
+        limit=10000,
+    )
+    return _csv_response("nexora-historial.csv", rows, ["ID", "ID_TG", "consulta", "valor", "fecha", "plataforma"])
+
+
+@app.route("/admin/export/historial.json", methods=["GET"])
+def admin_export_history_json():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    filters = {
+        "history_user": request.args.get("history_user", ""),
+        "history_command": request.args.get("history_command", ""),
+        "history_platform": request.args.get("history_platform", ""),
+        "history_from": request.args.get("history_from", ""),
+        "history_to": request.args.get("history_to", ""),
+        "history_q": request.args.get("history_q", ""),
+    }
+    rows = get_admin_history(
+        user_id=filters["history_user"],
+        command=filters["history_command"],
+        platform=filters["history_platform"],
+        date_from=filters["history_from"],
+        date_to=filters["history_to"],
+        q=filters["history_q"],
+        limit=10000,
+    )
+    return _json_download_response(
+        "nexora-historial.json",
+        {"exported_at": now_iso(), "filters": filters, "total": len(rows), "data": rows},
+    )
+
+
+@app.route("/admin/export/keys.csv", methods=["GET"])
+def admin_export_keys_csv():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    rows = get_key_items(
+        q=request.args.get("key_q", ""),
+        tipo=request.args.get("key_tipo", ""),
+        status=request.args.get("key_status", ""),
+        limit=10000,
+    )
+    return _csv_response(
+        "nexora-keys.csv",
+        rows,
+        ["key", "tipo", "cantidad", "usos", "canjes", "creador_id", "fecha_creacion"],
+    )
+
+
+@app.route("/admin/export/keys.json", methods=["GET"])
+def admin_export_keys_json():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    filters = {
+        "q": request.args.get("key_q", ""),
+        "tipo": request.args.get("key_tipo", ""),
+        "status": request.args.get("key_status", ""),
+    }
+    rows = get_key_items(q=filters["q"], tipo=filters["tipo"], status=filters["status"], limit=10000)
+    redemptions = get_key_redemptions(limit=10000)
+    return _json_download_response(
+        "nexora-keys.json",
+        {"exported_at": now_iso(), "filters": filters, "total": len(rows), "data": rows, "redemptions": redemptions},
+    )
+
+
+@app.route("/admin/db-backup.zip", methods=["GET"])
+def admin_db_backup_zip():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    return build_db_backup_response()
+
+
+@app.route("/admin/backup/daily/create", methods=["POST"])
+def admin_create_daily_backup():
+    gate = require_panel_owner()
+    if gate:
+        return gate
+    try:
+        path = ensure_daily_backup(force=True)
+        flash = f"Backup diario creado: {os.path.basename(path)}"
+    except Exception as exc:
+        flash = f"No se pudo crear backup diario: {exc}"
+    return redirect(url_for("admin_panel", section="sistema", flash=flash))
+
+
+@app.route("/admin/backup/daily/<path:filename>", methods=["GET"])
+def admin_download_daily_backup(filename: str):
+    gate = require_panel_login()
+    if gate:
+        return gate
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or not (safe_name.startswith(("spidersyn-auto-", "nexora-auto-", "nexora-before-restore-")) and safe_name.endswith(".zip")):
+        return jsonify({"status": "error", "message": "Archivo inválido"}), 400
+    path = os.path.join(backups_dir(), safe_name)
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "message": "Backup no encontrado"}), 404
+    return send_file(path, mimetype="application/zip", as_attachment=True, download_name=safe_name)
+
+
+@app.route("/admin/backup/db/restore", methods=["POST"])
+def admin_restore_db_backup():
+    gate = require_panel_roles("FUNDADOR")
+    if gate:
+        return gate
+    if remote_enabled():
+        return jsonify({"status": "error", "message": "La restauración de Turso requiere mantenimiento con bot y web pausados; no se reemplazan archivos locales."}), 409
+    if (request.form.get("confirm") or "").strip().upper() != "RESTAURAR":
+        return redirect(url_for("admin_panel", section="herramientas", flash="Escribe RESTAURAR para confirmar."))
+    uploaded = request.files.get("backup_zip")
+    if not uploaded:
+        return redirect(url_for("admin_panel", section="herramientas", flash="Falta el archivo ZIP."))
+
+    storage_items = get_storage_snapshot()["items"]
+    allowed_paths = {os.path.basename(item["path"]): item["path"] for item in storage_items}
+    temp_paths = []
+    try:
+        with zipfile.ZipFile(uploaded.stream) as zf:
+            members = {
+                os.path.basename(info.filename): info
+                for info in zf.infolist()
+                if not info.is_dir() and os.path.basename(info.filename)
+            }
+            restore_names = [name for name in allowed_paths if name in members]
+            if not restore_names:
+                return redirect(url_for("admin_panel", section="herramientas", flash="El ZIP no contiene DB reconocidas de NEXORA ONE."))
+
+            safety_path = create_named_db_backup("nexora-before-restore")
+            for name in restore_names:
+                target = allowed_paths[name]
+                tmp_path = f"{target}.restore.tmp"
+                with zf.open(members[name]) as src, open(tmp_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                temp_paths.append((tmp_path, target))
+
+        for tmp_path, target in temp_paths:
+            os.replace(tmp_path, target)
+        restored = ", ".join(restore_names)
+        safety_name = os.path.basename(safety_path)
+        log_audit_event("backup.restore", uploaded.filename or "backup.zip", f"restored={restored}; safety={safety_name}")
+        return redirect(
+            url_for(
+                "admin_panel",
+                section="herramientas",
+                flash=f"Backup restaurado ({restored}). Copia previa creada: {safety_name}",
+            )
+        )
+    except zipfile.BadZipFile:
+        return redirect(url_for("admin_panel", section="herramientas", flash="ZIP inválido."))
+    except Exception as exc:
+        return redirect(url_for("admin_panel", section="herramientas", flash=f"No se pudo restaurar backup: {exc}"))
+    finally:
+        for tmp_path, _target in temp_paths:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+
+@app.route("/admin/maintenance/cleanup-history", methods=["POST"])
+def admin_cleanup_history():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    try:
+        days = int(request.form.get("days") or 90)
+    except Exception:
+        days = 90
+    if days < 30:
+        return redirect(url_for("admin_panel", section="sistema", flash="Usa mínimo 30 días para limpiar historial."))
+    if (request.form.get("confirm") or "").strip().upper() != "LIMPIAR":
+        return redirect(url_for("admin_panel", section="sistema", flash="Escribe LIMPIAR para confirmar."))
+
+    cutoff = (now_utc() - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
+    backup_name = f"historial-before-cleanup-{now_utc().strftime('%Y%m%d%H%M%S')}.db.bak"
+    backup_path = os.path.join(get_data_dir(), backup_name)
+    try:
+        if remote_enabled() or os.path.exists(HIST_DB_PATH):
+            snapshot(HIST_DB_PATH, backup_path)
+        conn = get_conn(HIST_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM historial WHERE fecha < ?", (cutoff,))
+        deleted = int(cur.rowcount or 0)
+        conn.commit()
+        if not remote_enabled():
+            cur.execute("VACUUM")
+        conn.close()
+    except Exception as exc:
+        return redirect(url_for("admin_panel", section="sistema", flash=f"No se pudo limpiar historial: {exc}"))
+
+    log_audit_event("history.cleanup", f"{days}d", f"deleted={deleted}; cutoff={cutoff}; backup={backup_path}")
+    return redirect(
+        url_for(
+            "admin_panel",
+            section="sistema",
+            flash=f"Historial limpiado: {deleted} registros. Backup previo: {backup_name}",
+        )
+    )
+
+
+@app.route("/admin/password/update", methods=["POST"])
+def admin_update_panel_password():
+    gate = require_panel_owner()
+    if gate:
+        return gate
+    current = request.form.get("current_password") or ""
+    new_password = request.form.get("new_password") or ""
+    confirm = request.form.get("confirm_password") or ""
+    if not verify_panel_password(current):
+        return redirect(url_for("admin_panel", section="sistema", flash="Clave actual incorrecta."))
+    if len(new_password) < 8:
+        return redirect(url_for("admin_panel", section="sistema", flash="La nueva clave debe tener mínimo 8 caracteres."))
+    if new_password != confirm:
+        return redirect(url_for("admin_panel", section="sistema", flash="La confirmación no coincide."))
+    save_panel_setting_value("PANEL_PASSWORD_HASH", generate_password_hash(new_password))
+    log_audit_event("panel.password_update", session.get("panel_user") or PANEL_USER, "password changed")
+    return redirect(url_for("admin_panel", section="sistema", flash="Clave del panel actualizada."))
+
+
+@app.route("/admin/panel-account/save", methods=["POST"])
+def admin_save_panel_account():
+    gate = require_panel_owner()
+    if gate:
+        return gate
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    role = (request.form.get("role") or "SOPORTE").strip().upper()
+    is_active = 1 if (request.form.get("is_active") or "1") == "1" else 0
+    if not username:
+        return redirect(url_for("admin_panel", section="sistema", flash="Usuario de panel inválido."))
+    if username == PANEL_USER:
+        return redirect(url_for("admin_panel", section="sistema", flash="La cuenta principal se maneja desde Railway/Sistema."))
+    if role not in PANEL_ROLES:
+        role = "SOPORTE"
+    existing = get_panel_account(username)
+    if not existing and len(password) < 8:
+        return redirect(url_for("admin_panel", section="sistema", flash="La clave inicial debe tener mínimo 8 caracteres."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    now = now_iso()
+    if existing:
+        if password:
+            if len(password) < 8:
+                conn.close()
+                return redirect(url_for("admin_panel", section="sistema", flash="La nueva clave debe tener mínimo 8 caracteres."))
+            cur.execute(
+                """
+                UPDATE panel_accounts
+                SET password_hash = ?, role = ?, is_active = ?, updated_at = ?
+                WHERE username = ?
+                """,
+                (generate_password_hash(password), role, is_active, now, username),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE panel_accounts
+                SET role = ?, is_active = ?, updated_at = ?
+                WHERE username = ?
+                """,
+                (role, is_active, now, username),
+            )
+    else:
+        cur.execute(
+            """
+            INSERT INTO panel_accounts (username, password_hash, role, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, generate_password_hash(password), role, is_active, now, now),
+        )
+    conn.commit()
+    conn.close()
+    log_audit_event("panel.account.save", username, f"role={role}; active={is_active}")
+    return redirect(url_for("admin_panel", section="sistema", flash=f"Cuenta de panel {username} guardada."))
+
+
+def build_db_backup_response():
+    buffer = io.BytesIO()
+    temp_path = os.path.join(get_data_dir(), f"nexora-manual-{now_utc().strftime('%Y%m%d%H%M%S')}.zip.tmp")
+    try:
+        create_db_backup_file(temp_path)
+        with open(temp_path, "rb") as f:
+            buffer.write(f.read())
+    finally:
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+    buffer.seek(0)
+    return Response(
+        buffer.getvalue(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": "attachment; filename=nexora-db-backup.zip"},
+    )
+
+
+@app.route("/internal/db-backup.zip", methods=["GET"])
+def internal_db_backup_zip():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    return build_db_backup_response()
+
+
+@app.route("/internal/broadcast/users", methods=["GET"])
+def internal_broadcast_users():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    scope = (request.args.get("scope") or "active").strip().lower()
+    if scope not in {"active", "all"}:
+        return jsonify({"status": "error", "message": "scope inválido"}), 400
+    init_main_db()
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    if scope == "all":
+        cur.execute(
+            """
+            SELECT id_tg, estado, rol_tg, plan
+            FROM usuarios
+            WHERE id_tg IS NOT NULL AND TRIM(id_tg) != ''
+            ORDER BY id_tg
+            """
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id_tg, estado, rol_tg, plan
+            FROM usuarios
+            WHERE id_tg IS NOT NULL
+              AND TRIM(id_tg) != ''
+              AND UPPER(COALESCE(estado, 'ACTIVO')) != 'BANEADO'
+            ORDER BY id_tg
+            """
+        )
+    users = []
+    for row in cur.fetchall():
+        id_tg = str(row["id_tg"] or "").strip()
+        if not id_tg.isdigit():
+            continue
+        users.append(
+            {
+                "id_tg": id_tg,
+                "estado": row["estado"] or "",
+                "rol_tg": row["rol_tg"] or "",
+                "plan": row["plan"] or "",
+            }
+        )
+    conn.close()
+    return jsonify({"status": "ok", "scope": scope, "total": len(users), "users": users}), 200
+
+
+@app.route("/internal/request/upsert", methods=["POST"])
+def internal_request_upsert():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    payload = request.get_json(silent=True) or {}
+    try:
+        request_id = int(payload.get("id") or 0)
+    except Exception:
+        request_id = 0
+    if request_id <= 0:
+        return jsonify({"status": "error", "message": "id inválido"}), 400
+    init_requests_db()
+    conn = get_conn(REQUESTS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO requests (
+            id, user_id, username, command, payload, status, admin_msg_id, cost,
+            charged, delivery_count, created_at, resolved_at, resolved_by, resolution_note,
+            attachment_type, attachment_file_id, attachment_file_unique_id, attachment_file_name, attachment_caption,
+            origin_chat_id, origin_message_id, origin_chat_type, user_status_chat_id, user_status_message_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            user_id = excluded.user_id,
+            username = excluded.username,
+            command = excluded.command,
+            payload = excluded.payload,
+            status = excluded.status,
+            admin_msg_id = excluded.admin_msg_id,
+            cost = excluded.cost,
+            charged = excluded.charged,
+            delivery_count = excluded.delivery_count,
+            created_at = excluded.created_at,
+            resolved_at = excluded.resolved_at,
+            resolved_by = excluded.resolved_by,
+            resolution_note = excluded.resolution_note,
+            attachment_type = excluded.attachment_type,
+            attachment_file_id = excluded.attachment_file_id,
+            attachment_file_unique_id = excluded.attachment_file_unique_id,
+            attachment_file_name = excluded.attachment_file_name,
+            attachment_caption = excluded.attachment_caption,
+            origin_chat_id = excluded.origin_chat_id,
+            origin_message_id = excluded.origin_message_id,
+            origin_chat_type = excluded.origin_chat_type,
+            user_status_chat_id = excluded.user_status_chat_id,
+            user_status_message_id = excluded.user_status_message_id
+        """,
+        (
+            request_id,
+            payload.get("user_id"),
+            payload.get("username") or "",
+            payload.get("command") or "",
+            payload.get("payload") or "",
+            payload.get("status") or "pending",
+            payload.get("admin_msg_id"),
+            int(payload.get("cost") or 1),
+            int(payload.get("charged") or 0),
+            int(payload.get("delivery_count") or 0),
+            payload.get("created_at") or now_iso(),
+            payload.get("resolved_at") or None,
+            payload.get("resolved_by") or None,
+            payload.get("resolution_note") or "",
+            payload.get("attachment_type") or "",
+            payload.get("attachment_file_id") or "",
+            payload.get("attachment_file_unique_id") or "",
+            payload.get("attachment_file_name") or "",
+            payload.get("attachment_caption") or "",
+            payload.get("origin_chat_id"),
+            payload.get("origin_message_id"),
+            payload.get("origin_chat_type") or "",
+            payload.get("user_status_chat_id"),
+            payload.get("user_status_message_id"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "message": "Solicitud sincronizada", "id": request_id}), 200
+
+
+@app.route("/internal/admin/user", methods=["GET"])
+def internal_admin_user_summary():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    user_id = (request.args.get("ID_TG") or "").strip()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Falta ID_TG"}), 400
+    profile = get_user_profile_snapshot(user_id)
+    if not profile.get("user"):
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    return jsonify({"status": "ok", "data": profile}), 200
+
+
+@app.route("/internal/admin/user-action", methods=["POST"])
+def internal_admin_user_action():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = str(request_value("ID_TG") or "").strip()
+    action = str(request_value("action") or "").strip().lower()
+    if not id_tg or action not in {"ban", "unban"}:
+        return jsonify({"status": "error", "message": "Parámetros inválidos"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    estado = "BANEADO" if action == "ban" else "ACTIVO"
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET estado = ? WHERE id_tg = ?", (estado, id_tg))
+    conn.commit()
+    conn.close()
+    log_audit_event("bot.user.action", id_tg, action, actor=bot_actor())
+    return jsonify({"status": "ok", "message": f"Usuario {id_tg} actualizado", "estado": estado}), 200
+
+
+@app.route("/internal/admin/register-ban", methods=["POST"])
+def internal_admin_register_ban():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = str(request_value("ID_TG") or "").strip()
+    if not id_tg or not id_tg.isdigit():
+        return jsonify({"status": "error", "message": "ID_TG inválido"}), 400
+    created = False
+    row = get_user_by_id(id_tg)
+    if not row:
+        create_user(id_tg)
+        created = True
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET estado = 'BANEADO' WHERE id_tg = ?", (id_tg,))
+    conn.commit()
+    conn.close()
+    log_audit_event("bot.user.register_ban", id_tg, f"created={created}", actor=bot_actor())
+    return jsonify({"status": "ok", "message": "Usuario registrado y baneado", "estado": "BANEADO", "created": created}), 200
+
+
+@app.route("/internal/admin/sales-summary", methods=["GET"])
+def internal_admin_sales_summary():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    dashboard = get_dashboard_snapshot()
+    return jsonify({"status": "ok", "data": {"periods": dashboard.get("periods", {}), "ventas_por_periodo": dashboard.get("ventas_por_periodo", []), "top_vendedores": dashboard.get("top_vendedores", []), "ventas_por_tipo": dashboard.get("ventas_por_tipo", [])}}), 200
+
+
+@app.route("/internal/admin/errors", methods=["GET"])
+def internal_admin_errors():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    try:
+        limit = max(1, min(50, int(request.args.get("limit") or 10)))
+    except Exception:
+        limit = 10
+    return jsonify({"status": "ok", "data": get_error_logs(limit=limit), "metrics": get_health_metrics().get("errores", {})}), 200
+
+
+@app.route("/admin/export", methods=["GET"])
+def admin_export_panel():
+    gate = require_panel_login()
+    if gate:
+        return gate
+    payload = {
+        "categories": get_catalog_categories(),
+        "commands": get_catalog_commands(),
+        "buy_packages": get_buy_packages(),
+        "settings": get_panel_settings(),
+        "request_templates": get_request_templates(),
+    }
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=nexora-panel-backup.json"},
+    )
+
+
+@app.route("/admin/import", methods=["POST"])
+def admin_import_panel():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    uploaded = request.files.get("backup_file")
+    if not uploaded:
+        return redirect(url_for("admin_panel", section="herramientas", flash="Falta el archivo de respaldo."))
+    try:
+        payload = json.load(uploaded.stream)
+    except Exception:
+        return redirect(url_for("admin_panel", section="herramientas", flash="Archivo JSON inválido."))
+
+    conn = get_conn(DB_PATH)
+    cur = conn.cursor()
+    for item in payload.get("settings", {}).items():
+        key, value = item
+        cur.execute(
+            "INSERT INTO panel_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value or "")),
+        )
+    for cat in payload.get("categories", []):
+        cur.execute(
+            """
+            INSERT INTO command_categories (slug, name, description, icon, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                icon = excluded.icon,
+                sort_order = excluded.sort_order,
+                is_active = excluded.is_active
+            """,
+            (
+                cat.get("slug"),
+                cat.get("name"),
+                cat.get("description", ""),
+                cat.get("icon") or DEFAULT_CATEGORY_ICONS.get(str(cat.get("slug") or "").lower(), "🧩"),
+                int(cat.get("sort_order", 0)),
+                int(bool(cat.get("is_active", 1))),
+            ),
+        )
+    conn.commit()
+    cur.execute("SELECT id, slug FROM command_categories")
+    category_ids = {row[1]: row[0] for row in cur.fetchall()}
+    for cmd in payload.get("commands", []):
+        cur.execute(
+            """
+            INSERT INTO command_catalog (slug, name, description, category_id, cost, is_active, sort_order, usage_hint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                category_id = excluded.category_id,
+                cost = excluded.cost,
+                is_active = excluded.is_active,
+                sort_order = excluded.sort_order,
+                usage_hint = excluded.usage_hint
+            """,
+            (
+                cmd.get("slug"),
+                cmd.get("name"),
+                cmd.get("description", ""),
+                category_ids.get(cmd.get("category_slug")),
+                int(cmd.get("cost", 1)),
+                int(bool(cmd.get("is_active", 1))),
+                int(cmd.get("sort_order", 0)),
+                cmd.get("usage_hint", ""),
+            ),
+        )
+    for pkg in payload.get("buy_packages", []):
+        cur.execute(
+            """
+            INSERT INTO buy_packages (id, kind, group_slug, badge, title, subtitle, line_text, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                kind = excluded.kind,
+                group_slug = excluded.group_slug,
+                badge = excluded.badge,
+                title = excluded.title,
+                subtitle = excluded.subtitle,
+                line_text = excluded.line_text,
+                sort_order = excluded.sort_order,
+                is_active = excluded.is_active
+            """,
+            (
+                int(pkg.get("id", 0)) or None,
+                pkg.get("kind", "credits"),
+                pkg.get("group_slug", ""),
+                pkg.get("badge", ""),
+                pkg.get("title", ""),
+                pkg.get("subtitle", ""),
+                pkg.get("line_text", ""),
+                int(pkg.get("sort_order", 0)),
+                int(bool(pkg.get("is_active", 1))),
+            ),
+        )
+    conn.commit()
+    conn.close()
+    req_conn = get_conn(REQUESTS_DB_PATH)
+    req_cur = req_conn.cursor()
+    for tpl in payload.get("request_templates", []):
+        req_cur.execute(
+            """
+            INSERT INTO request_templates (key, text, billable)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET text = excluded.text, billable = excluded.billable
+            """,
+            (
+                str(tpl.get("key") or "").strip().lower(),
+                str(tpl.get("text") or ""),
+                int(tpl.get("billable") or 0),
+            ),
+        )
+    req_conn.commit()
+    req_conn.close()
+    log_audit_event(
+        "panel.import",
+        "backup",
+        f"categories={len(payload.get('categories', []))}; commands={len(payload.get('commands', []))}; packages={len(payload.get('buy_packages', []))}; templates={len(payload.get('request_templates', []))}",
+    )
+    return redirect(url_for("admin_panel", section="herramientas", flash="Respaldo importado correctamente."))
+
+
+@app.route("/admin/bulk/commands", methods=["POST"])
+def admin_bulk_commands():
+    gate = require_panel_roles("FUNDADOR", "CO-FUNDADOR")
+    if gate:
+        return gate
+    category_slug = (request.form.get("category_slug") or "").strip().lower()
+    current_status = (request.form.get("current_status") or "").strip().lower()
+    status_action = (request.form.get("status_action") or "").strip().lower()
+    cost_action = (request.form.get("cost_action") or "").strip().lower()
+    try:
+        cost_value = int(request.form.get("cost_value") or 0)
+    except Exception:
+        cost_value = 0
+
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.slug, c.cost, c.is_active
+        FROM command_catalog c
+        LEFT JOIN command_categories cat ON cat.id = c.category_id
+        """
+    )
+    rows = cur.fetchall()
+    selected = []
+    for row in rows:
+        if category_slug:
+            cur2 = get_conn(DB_PATH)
+            cur2.row_factory = sqlite3.Row
+            c2 = cur2.cursor()
+            c2.execute("SELECT cat.slug FROM command_catalog c LEFT JOIN command_categories cat ON cat.id = c.category_id WHERE c.slug = ?", (row["slug"],))
+            rr = c2.fetchone()
+            cur2.close()
+            if not rr or (rr["slug"] or "").lower() != category_slug:
+                continue
+        if current_status == "active" and not row["is_active"]:
+            continue
+        if current_status == "inactive" and row["is_active"]:
+            continue
+        selected.append(row)
+
+    count = 0
+    for row in selected:
+        if status_action == "activate":
+            cur.execute("UPDATE command_catalog SET is_active = 1 WHERE slug = ?", (row["slug"],))
+        elif status_action == "deactivate":
+            cur.execute("UPDATE command_catalog SET is_active = 0 WHERE slug = ?", (row["slug"],))
+        if cost_action == "sum":
+            cur.execute("UPDATE command_catalog SET cost = MAX(0, cost + ?) WHERE slug = ?", (cost_value, row["slug"]))
+        elif cost_action == "set":
+            cur.execute("UPDATE command_catalog SET cost = ? WHERE slug = ?", (max(0, cost_value), row["slug"]))
+        count += 1
+    conn.commit()
+    conn.close()
+    log_audit_event(
+        "command.bulk",
+        category_slug or "all",
+        f"count={count}; status_action={status_action}; cost_action={cost_action}; cost_value={cost_value}",
+    )
+    return redirect(url_for("admin_panel", section="herramientas", flash=f"Acción masiva aplicada a {count} comandos."))
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def panel_login():
+    if not _panel_request_allowed():
+        return jsonify({"status": "error", "message": "Panel solo disponible localmente"}), 403
+    error = ""
+    next_url = request.args.get("next") or url_for("admin_panel")
+    ip = request.remote_addr or "unknown"
+    attempts = PANEL_LOGIN_ATTEMPTS.get(ip, [])
+    now_ts = time.time()
+    attempts = [ts for ts in attempts if now_ts - ts < 900]
+    PANEL_LOGIN_ATTEMPTS[ip] = attempts
+    if len(attempts) >= 5:
+        return render_template("admin_login.html", error="Demasiados intentos. Espera 15 minutos."), 429
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        if username == PANEL_USER and verify_panel_password(password):
+            session["panel_auth"] = True
+            session["panel_user"] = username
+            session["panel_role"] = "FUNDADOR"
+            PANEL_LOGIN_ATTEMPTS.pop(ip, None)
+            log_audit_event("panel.login", username, "success", actor=username)
+            return redirect(next_url)
+        account = get_panel_account(username)
+        if account and int(account.get("is_active") or 0) == 1 and check_password_hash(account["password_hash"], password):
+            session["panel_auth"] = True
+            session["panel_user"] = username
+            session["panel_role"] = (account.get("role") or "SOPORTE").upper()
+            PANEL_LOGIN_ATTEMPTS.pop(ip, None)
+            log_audit_event("panel.login", username, f"success role={session['panel_role']}", actor=username)
+            return redirect(next_url)
+        attempts.append(now_ts)
+        PANEL_LOGIN_ATTEMPTS[ip] = attempts
+        log_audit_event("panel.login_failed", username or "unknown", f"attempts={len(attempts)}", actor=username or "unknown")
+        error = "Usuario o clave inválidos."
+    return render_template("admin_login.html", error=error)
+
+
+@app.route("/admin/logout", methods=["GET"])
+def panel_logout():
+    log_audit_event("panel.logout", session.get("panel_user") or PANEL_USER, "logout")
+    session.pop("panel_auth", None)
+    session.pop("panel_user", None)
+    session.pop("panel_role", None)
+    return redirect(url_for("panel_login"))
+
+@app.route("/historial_id", methods=["GET"])
+def historial_id():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    id_tg = request_value("ID_TG")
+    if not id_tg:
+        return jsonify({"status": "error", "message": "Falta el parámetro ID_TG"}), 400
+    row = get_user_by_id(id_tg)
+    if not row:
+        return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
+    conn = get_conn(HIST_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT ID_TG, consulta, valor, fecha, plataforma FROM historial WHERE ID_TG = ? ORDER BY fecha DESC, ID DESC", (id_tg,))
+    rows = cur.fetchall()
+    conn.close()
+    data = [{"ID_TG": r["ID_TG"], "CONSULTA": r["consulta"], "VALOR": r["valor"], "FECHA": r["fecha"], "PLATAFORMA": r["plataforma"]} for r in rows]
+    msg = "Historial listado" if data else "Sin historial para este ID_TG"
+    return jsonify({"status": "ok", "message": msg, "data": data}), 200
+
+@app.route("/login_web", methods=["POST"])
+@cross_origin(
+    origins=["http://127.0.0.1:5500"],
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "OPTIONS"]
+)
+def login_web():
+    """
+    Login WEB:
+      - Parâmetros: user, pass  (en querystring GET o en form-data/x-www-form-urlencoded POST)
+      - Requisitos: el usuario debe existir con register_web=1
+      - Resultado: TOKEN_API_WEB (si no existe, se genera y se retorna)
+    """
+    # Obtener credenciales desde args o form
+    user = (request.values.get("user") or "").strip()
+    password = (request.values.get("pass") or "").strip()
+    ip = request.remote_addr or "unknown"
+    rate_key = f"{ip}:{user.lower() or 'anonymous'}"
+
+    if _rate_limited(WEB_LOGIN_ATTEMPTS, rate_key, limit=8, window_seconds=900):
+        return jsonify({
+            "status": "error",
+            "message": "Demasiados intentos. Espera 15 minutos."
+        }), 429
+
+    if not user or not password:
+        _record_rate_limit_attempt(WEB_LOGIN_ATTEMPTS, rate_key, 900)
+        return jsonify({
+            "status": "error",
+            "message": "Parámetros requeridos: user y pass"
+        }), 400
+
+    # Buscar usuario por user_web (case-insensitive)
+    conn = get_conn(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM usuarios WHERE LOWER(user_web) = LOWER(?)",
+        (user,)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        _record_rate_limit_attempt(WEB_LOGIN_ATTEMPTS, rate_key, 900)
+        return jsonify({
+            "status": "error",
+            "message": "Credenciales inválidas"
+        }), 401
+
+    # Verificar que tenga WEB activado
+    if not bool(row["register_web"]):
+        conn.close()
+        _record_rate_limit_attempt(WEB_LOGIN_ATTEMPTS, rate_key, 900)
+        return jsonify({
+            "status": "error",
+            "message": "Credenciales inválidas"
+        }), 401
+
+    stored_password = row["pass_web"] or ""
+    password_ok = False
+    if stored_password.startswith("pbkdf2:") or stored_password.startswith("scrypt:"):
+        password_ok = check_password_hash(stored_password, password)
+    else:
+        password_ok = stored_password == password
+
+    if not password_ok:
+        conn.close()
+        _record_rate_limit_attempt(WEB_LOGIN_ATTEMPTS, rate_key, 900)
+        return jsonify({
+            "status": "error",
+            "message": "Credenciales inválidas"
+        }), 401
+
+    # Asegurar token_api_web (si no existe, generarlo)
+    token = row["token_api_web"]
+    created = False
+    if not token:
+        token = generate_unique_token()
+        cur.execute(
+            "UPDATE usuarios SET token_api_web = ? WHERE id_tg = ?",
+            (token, row["id_tg"])
+        )
+        conn.commit()
+        created = True
+    _clear_rate_limit(WEB_LOGIN_ATTEMPTS, rate_key)
+
+    # Respuesta OK con datos útiles
+    payload = {
+        "TOKEN_API_WEB": token,
+        "ID_TG": row["id_tg"],
+        "PLAN": row["plan"],
+        "ESTADO": row["estado"],
+        "CREDITOS": row["creditos"],
+        "FECHA_DE_CADUCIDAD": row["fecha_caducidad"],
+        "ANTISPAM": row["antispam"],
+        "TOKEN_CREATED": created
+    }
+    conn.close()
+    return jsonify({
+        "status": "ok",
+        "message": "Login correcto",
+        "data": payload
+    }), 200
+
+
+# -------------------------
+# Main
+# -------------------------
+@schema_initializer
+def init_app_databases():
+    init_assets()
+    init_main_db()
+    sync_owner_users()
+    init_hist_db()
+    init_compras_db()
+    init_keys_db()
+    init_catalog_db()
+    init_buy_db()
+    init_panel_settings_db()
+    init_panel_accounts_db()
+    init_requests_db()
+
+
+init_app_databases()
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False)

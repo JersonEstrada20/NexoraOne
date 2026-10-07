@@ -1,0 +1,319 @@
+import json
+import os
+import re
+import time
+
+from telegram import Update
+from telegram.ext import ContextTypes
+
+from nexora.comandos.admin_requests import create_request
+from nexora.comandos.utils import configured_admin_ids, get_command_runtime_config, verificar_usuario
+
+CONFIG_FILE_PATH = "config.json"
+
+CFG = {}
+try:
+    if os.path.exists(CONFIG_FILE_PATH):
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+            CFG = json.load(f) or {}
+except Exception:
+    CFG = {}
+
+CMDS = CFG.get("CMDS", {}) or {}
+ERRS = CFG.get("ERRORCONSULTA", {}) or {}
+
+ADMIN_IDS = configured_admin_ids()
+
+NOCRED_TXT = ERRS.get("NOCREDITSTXT") or "[❗] No tienes créditos suficientes."
+NOCRED_FT = (ERRS.get("NOCREDITSFT") or "").strip() or None
+
+PLATE_RE = re.compile(r"^[A-Za-z0-9]{1,3}[-]?[A-Za-z0-9]{1,4}[-]?[A-Za-z0-9]{0,3}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+VALIDATION_MESSAGES = {
+    "missing": "Por favor, proporciona los datos después de /{command}.",
+    "dni": "Por favor, introduce un número de DNI válido (8 dígitos).",
+    "ruc": "Por favor, introduce un RUC válido (11 dígitos).",
+    "phone": "Por favor, introduce un número válido.",
+    "digits": "Por favor, introduce solo números.",
+    "email": "Por favor, introduce un correo válido.",
+    "plate": "Por favor, introduce una placa válida. Ejemplo: ABC123 o ABC-123.",
+    "name": "Por favor, usa el formato correcto: /{command} nombre|paterno|materno",
+}
+
+PLAN_LEVELS = {"FREE": 0, "BASICO": 1, "STANDARD": 2, "PREMIUM": 3}
+PLAN_LABELS = {"FREE": "Libre", "BASICO": "Básico", "STANDARD": "Standard", "PREMIUM": "Premium"}
+
+LOADER_ALIASES = {
+    "vehiculos": "SUNARP",
+    "telefonia": "OSIPTEL",
+    "familia": "RENIEC",
+    "actas": "RENIEC",
+    "extras": "EXTRAS",
+    "delitos": "DELITOS",
+    "laboral": "LABORAL",
+    "migraciones": "MIGRACIONES",
+    "reniec": "RENIEC",
+    "sunarp": "SUNARP",
+}
+
+REQUEST_COMMANDS = [
+    ("nm", 2, "reniec", "name"),
+    ("dni", 1, "reniec", "dni"),
+    ("dnif", 3, "reniec", "dni"),
+    ("dnim", 2, "reniec", "dni"),
+    ("c4", 5, "reniec", "dni"),
+    ("c4blanco", 5, "reniec", "dni"),
+    ("c4azul", 5, "reniec", "dni"),
+    ("dnivel", 5, "reniec", "dni"),
+    ("dnivam", 5, "reniec", "dni"),
+    ("dnivaz", 5, "reniec", "dni"),
+    ("revitec", 10, "vehiculos", "plate"),
+    ("tiveqr", 15, "vehiculos", "plate"),
+    ("soat", 7, "vehiculos", "plate"),
+    ("tive", 8, "vehiculos", "plate"),
+    ("tiveor", 10, "vehiculos", "plate"),
+    ("tarjetafisica", 10, "vehiculos", "plate"),
+    ("placasiento", 10, "vehiculos", "plate"),
+    ("pla", 3, "vehiculos", "plate"),
+    ("papeletas", 8, "vehiculos", "plate"),
+    ("bolinv", 8, "vehiculos", "plate"),
+    ("insve", 6, "vehiculos", "plate"),
+    ("licencia", 5, "vehiculos", "dni"),
+    ("licenciapdf", 8, "vehiculos", "dni"),
+    ("rqv", 10, "delitos", "plate"),
+    ("denunciasv", 10, "delitos", "plate"),
+    ("det", 5, "delitos", "dni"),
+    ("ant", 8, "delitos", "dni"),
+    ("antpe", 7, "delitos", "dni"),
+    ("antpo", 7, "delitos", "dni"),
+    ("antju", 7, "delitos", "dni"),
+    ("denuncias", 10, "delitos", "dni"),
+    ("rq", 8, "delitos", "dni"),
+    ("fis", 10, "delitos", "dni"),
+    ("fispdf", 25, "delitos", "dni"),
+    ("hogar", 5, "familia", "dni"),
+    ("ag", 10, "familia", "dni"),
+    ("agv", 20, "familia", "dni"),
+    ("her", 5, "familia", "dni"),
+    ("numclaro", 7, "telefonia", "phone"),
+    ("correo", 3, "telefonia", "email"),
+    ("enteldb", 3, "telefonia", "phone"),
+    ("movistar", 7, "telefonia", "phone"),
+    ("bitel", 7, "telefonia", "phone"),
+    ("claro", 7, "telefonia", "phone"),
+    ("vlop", 1, "telefonia", "phone"),
+    ("vlnum", 1, "telefonia", "phone"),
+    ("cel", 7, "telefonia", "phone"),
+    ("tels", 5, "telefonia", "phone"),
+    ("telp", 7, "telefonia", "phone"),
+    ("tel", 3, "telefonia", "phone"),
+    ("sunarp", 10, "sunarp", "dni"),
+    ("sunarpdf", 20, "sunarp", "dni"),
+    ("sueldos", 5, "laboral", "dni"),
+    ("trabajos", 5, "laboral", "dni"),
+    ("actamdb", 5, "actas", "dni"),
+    ("actaddb", 5, "actas", "dni"),
+    ("migrapdf", 6, "migraciones", "dni"),
+    ("afp", 3, "extras", "dni"),
+    ("dir", 3, "extras", "dni"),
+    ("trabajadores", 8, "extras", "digits"),
+    ("sbs", 5, "extras", "dni"),
+    ("notas", 25, "extras", "dni"),
+    ("essalud", 3, "extras", "dni"),
+    ("doc", 3, "extras", "dni"),
+    ("ruc", 5, "extras", "ruc"),
+    ("sunat", 8, "extras", "ruc"),
+    ("seeker", 10, "extras", "dni"),
+    ("facial", 30, "reniec", "dni"),
+]
+
+
+def _first_arg(context: ContextTypes.DEFAULT_TYPE) -> str:
+    return str((getattr(context, "args", None) or [""])[0]).strip()
+
+
+def _validation_message(key: str, command: str) -> str:
+    return (VALIDATION_MESSAGES.get(key) or VALIDATION_MESSAGES["missing"]).format(command=command)
+
+
+def _normalize_plan(value: str | None) -> str:
+    raw = (value or "").strip().upper()
+    aliases = {
+        "": "FREE",
+        "NONE": "FREE",
+        "PUBLICO": "FREE",
+        "PÚBLICO": "FREE",
+        "LIBRE": "FREE",
+        "BASIC": "BASICO",
+        "BÁSICO": "BASICO",
+        "STANDAR": "STANDARD",
+        "ESTANDAR": "STANDARD",
+        "ESTÁNDAR": "STANDARD",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in PLAN_LEVELS else "FREE"
+
+
+def _user_plan(info_usuario: dict) -> str:
+    return _normalize_plan(
+        info_usuario.get("PLAN")
+        or info_usuario.get("plan")
+        or info_usuario.get("ROL_TG")
+        or info_usuario.get("rol_tg")
+    )
+
+
+def _plan_block_message(command: str, required_plan: str, current_plan: str) -> str:
+    required_label = PLAN_LABELS.get(required_plan, required_plan)
+    current_label = PLAN_LABELS.get(current_plan, current_plan)
+    return (
+        "🔒 Acceso reservado\n\n"
+        f"El comando /{command} requiere plan {required_label} o superior.\n"
+        f"Tu plan actual es {current_label}.\n\n"
+        "Usa /buy para subir de rango y activar este comando."
+    )
+
+
+def _validate_input(command: str, context: ContextTypes.DEFAULT_TYPE, validation: str) -> str | None:
+    value = _first_arg(context)
+    if not value:
+        return _validation_message("missing", command)
+    if validation == "dni" and not (value.isdigit() and len(value) == 8):
+        return _validation_message("dni", command)
+    if validation == "ruc" and not (value.isdigit() and len(value) == 11):
+        return _validation_message("ruc", command)
+    if validation == "phone" and not (value.isdigit() and 6 <= len(value) <= 15):
+        return _validation_message("phone", command)
+    if validation == "digits" and not value.isdigit():
+        return _validation_message("digits", command)
+    if validation == "email" and not EMAIL_RE.fullmatch(value):
+        return _validation_message("email", command)
+    if validation == "plate" and not PLATE_RE.fullmatch(value):
+        return _validation_message("plate", command)
+    if validation == "name" and len(" ".join(getattr(context, "args", []) or []).strip()) < 3:
+        return _validation_message("name", command)
+    return None
+
+
+def _loader_assets(category_slug: str | None):
+    alias = LOADER_ALIASES.get((category_slug or "").strip().lower(), (category_slug or "").strip().upper())
+    loading_ft = (CMDS.get(f"FT_{alias}") or "").strip() or None
+    loading_txt = (CMDS.get(f"TXT_{alias}") or "Consultando…").strip()
+    return loading_ft, loading_txt
+
+
+def _antispam_seconds(info_usuario: dict) -> int:
+    raw = (
+        info_usuario.get("ANTISPAM")
+        or info_usuario.get("anti_spam")
+        or info_usuario.get("antispam")
+        or info_usuario.get("ANTI_SPAM")
+        or 0
+    )
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 0
+
+
+def _is_privileged_user(info_usuario: dict) -> bool:
+    role = (
+        info_usuario.get("ROL_TG")
+        or info_usuario.get("ROL")
+        or info_usuario.get("role")
+        or info_usuario.get("rol")
+        or ""
+    )
+    return str(role).strip().upper() in {"FUNDADOR", "DUEÑO", "DUENO", "OWNER", "ADMIN", "COFUNDADOR"}
+
+
+def _check_request_cooldown(context: ContextTypes.DEFAULT_TYPE, user_id: int, info_usuario: dict) -> str | None:
+    if user_id in ADMIN_IDS or _is_privileged_user(info_usuario):
+        return None
+    cooldown = _antispam_seconds(info_usuario)
+    if cooldown <= 0:
+        return None
+    bot_data = getattr(context.application, "bot_data", {}) if getattr(context, "application", None) else {}
+    store = bot_data.setdefault("request_command_cooldowns", {})
+    key = str(user_id)
+    now = time.monotonic()
+    last = float(store.get(key) or 0)
+    remaining = int(round(cooldown - (now - last)))
+    if remaining > 0:
+        return f"UPS, por favor espera el anti-spam de {cooldown} segundos.\nIntenta de nuevo en {remaining} s."
+    store[key] = now
+    return None
+
+
+async def handle_request_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    command: str,
+    default_cost: int,
+    category_slug: str,
+    validation: str,
+):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+
+    validation_error = _validate_input(command, context, validation)
+    if validation_error:
+        await msg.reply_text(validation_error, reply_to_message_id=msg.message_id)
+        return
+
+    valido, info_usuario = verificar_usuario(str(user.id))
+    if not valido:
+        await msg.reply_text("🚫 Tu cuenta no está activa o no existe.")
+        return
+
+    command_cfg = get_command_runtime_config(command, default_cost)
+    if not command_cfg.get("is_active", True):
+        await msg.reply_text("⚠️ Este comando está desactivado temporalmente.")
+        return
+
+    required_plan = _normalize_plan(command_cfg.get("required_plan"))
+    current_plan = _user_plan(info_usuario)
+    if not _is_privileged_user(info_usuario) and PLAN_LEVELS[current_plan] < PLAN_LEVELS[required_plan]:
+        await msg.reply_text(
+            _plan_block_message(command, required_plan, current_plan),
+            reply_to_message_id=msg.message_id,
+        )
+        return
+
+    required_credits = int(command_cfg.get("cost") or default_cost)
+    creditos = int(info_usuario.get("CREDITOS", 0))
+    ilimitado = info_usuario.get("ilimitado", False)
+    if not ilimitado and creditos < required_credits:
+        if NOCRED_FT:
+            await msg.reply_photo(photo=NOCRED_FT, caption=NOCRED_TXT, parse_mode="HTML")
+        else:
+            await msg.reply_text(NOCRED_TXT, parse_mode="HTML")
+        return
+
+    cooldown_error = _check_request_cooldown(context, user.id, info_usuario)
+    if cooldown_error:
+        await msg.reply_text(cooldown_error, reply_to_message_id=msg.message_id)
+        return
+
+    loader_category = command_cfg.get("category_slug") or category_slug
+    loading_ft, loading_txt = _loader_assets(loader_category)
+    status_message = None
+    try:
+        if loading_ft:
+            status_message = await msg.reply_photo(photo=loading_ft, caption=loading_txt, parse_mode="HTML")
+        else:
+            status_message = await msg.reply_text(loading_txt, parse_mode="HTML")
+    except Exception:
+        pass
+
+    await create_request(update, context, command, cost=required_credits, user_info=info_usuario, status_message=status_message)
+
+
+def make_request_command(command: str, default_cost: int, category_slug: str, validation: str):
+    async def _command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await handle_request_command(update, context, command, default_cost, category_slug, validation)
+
+    return _command

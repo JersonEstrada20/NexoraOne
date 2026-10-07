@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+**/*.db
+**/*.db-*
+**/*.key
+**/.env
+.env
+nexora/data
+nexora/config.json
+app/data
+tests

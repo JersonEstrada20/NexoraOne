@@ -1,0 +1,1961 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>NEXORA ONE Panel</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f3ee; --bg-grad-1:#f7f1e8; --bg-grad-2:#efe7d8; --ink:#1e1d1a; --muted:#6a655c; --card:#fffdf8; --surface:#fff8ef; --surface-2:#f0e6d6; --line:#ddd2bf; --accent:#1f6f5f; --accent-2:#d99b38; --danger:#b64a3c; --accent-3:#325f9b; --button-ink:#fffdf8; --danger-ink:#fffdf8; --preview-bg-1:#d9ecff; --preview-bg-2:#c8e2fb; --preview-line:#b8d2ea; --bubble-bg:#ffffff; --bubble-ink:#1b1f22; --flash-bg:#e7f4ed; --flash-line:#b9dec8; --input-bg:#fffdfa; --shadow-soft:0 10px 30px rgba(79,54,24,.08); --shadow-card:0 10px 20px rgba(79,54,24,.06); }
+    body.dark { color-scheme: dark; --bg:#09110f; --bg-grad-1:#07110e; --bg-grad-2:#10201b; --ink:#f7f1e7; --muted:#9fb0a8; --card:#101917; --surface:#17221f; --surface-2:#1d2a26; --line:#273734; --accent:#55d4b1; --accent-2:#f0b45b; --danger:#e17368; --accent-3:#8bb5ff; --button-ink:#06231d; --danger-ink:#1d0907; --preview-bg-1:#0d2331; --preview-bg-2:#163447; --preview-line:#285166; --bubble-bg:#1a313a; --bubble-ink:#f6efe4; --flash-bg:#122c22; --flash-line:#275141; --input-bg:#0d1614; --shadow-soft:0 18px 48px rgba(0,0,0,.32); --shadow-card:0 16px 34px rgba(0,0,0,.28); }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Segoe UI, sans-serif; background:linear-gradient(180deg,var(--bg-grad-1) 0%,var(--bg-grad-2) 100%); color:var(--ink); transition:background .2s ease,color .2s ease; }
+    .wrap { max-width:1400px; margin:0 auto; padding:24px; }
+    h1,h2,h3 { margin:0 0 12px; }
+    .hero { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:24px; margin-bottom:20px; box-shadow:var(--shadow-soft); }
+    .layout { display:grid; grid-template-columns:240px 1fr; gap:20px; align-items:start; }
+    .grid { display:grid; grid-template-columns: 360px 1fr; gap:20px; align-items:start; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:var(--shadow-card); }
+    label { display:block; font-size:13px; color:var(--muted); margin:10px 0 6px; }
+    input, select, textarea, button { width:100%; border-radius:12px; border:1px solid var(--line); padding:10px 12px; font:inherit; }
+    input, select, textarea { background:var(--input-bg); color:var(--ink); }
+    textarea { min-height:78px; resize:vertical; }
+    button { cursor:pointer; background:var(--accent); color:var(--button-ink); border:none; font-weight:800; }
+    button.secondary { background:var(--accent-2); color:#241b0f; }
+    button.danger { background:var(--danger); color:var(--danger-ink); }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .badge { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700; }
+    .ok { background:#dff3ea; color:#1e6b4e; }
+    .off { background:#f7dddd; color:#8a2f2f; }
+    .muted { color:var(--muted); }
+    .flash { margin:0 0 16px; padding:12px 14px; border-radius:12px; background:var(--flash-bg); border:1px solid var(--flash-line); }
+    .stack { display:grid; gap:10px; }
+    .inline { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .actions { display:flex; gap:8px; }
+    .actions form { display:inline-block; }
+    .small { font-size:12px; color:var(--muted); }
+    .toolbar { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .search-form { display:flex; gap:8px; min-width:360px; }
+    .search-form input { min-width:220px; }
+    .search-form button { width:auto; white-space:nowrap; }
+    .hero a { color:var(--accent); font-weight:700; text-decoration:none; }
+    .sidebar { position:sticky; top:16px; display:grid; gap:10px; }
+    .side-link { display:block; padding:12px 14px; border-radius:14px; background:var(--card); border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:700; }
+    .content { display:grid; gap:20px; }
+    .summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; }
+    .metric { padding:16px; border-radius:16px; border:1px solid var(--line); background:var(--surface); }
+    .metric h3 { margin:8px 0 2px; font-size:28px; }
+    .pill { display:inline-block; padding:5px 10px; border-radius:999px; background:var(--surface-2); font-size:12px; font-weight:700; color:var(--ink); }
+    .section-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .three { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+    .subnav { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    .subnav a { padding:8px 12px; border-radius:999px; background:var(--surface-2); color:var(--ink); text-decoration:none; font-size:13px; font-weight:700; }
+    .mini-card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px; }
+    .preview-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-top:18px; }
+    .preview-card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px; white-space:pre-wrap; font-size:13px; line-height:1.45; }
+    .side-link.active { background:color-mix(in srgb, var(--accent) 16%, var(--card)); border-color:color-mix(in srgb, var(--accent) 42%, var(--line)); color:var(--ink); }
+    .theme-toggle { padding:10px 14px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; font-weight:700; }
+    .telegram-preview { background:linear-gradient(180deg,var(--preview-bg-1) 0%,var(--preview-bg-2) 100%); border:1px solid var(--preview-line); border-radius:18px; padding:16px; min-height:180px; }
+    .telegram-bubble { background:var(--bubble-bg); color:var(--bubble-ink); border-radius:18px 18px 18px 6px; padding:12px 14px; box-shadow:0 4px 12px rgba(0,0,0,.12); }
+    .pager { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:14px 0; }
+    .pager a { text-decoration:none; color:var(--accent); font-weight:700; }
+    .toolbar-right { display:flex; gap:10px; align-items:center; }
+    .command-tools { grid-template-columns:repeat(2, minmax(0, 1fr)); align-items:start; }
+    .table-scroll { overflow-x:auto; }
+    .commands-table { min-width:920px; }
+    .commands-table td:nth-child(1) { min-width:220px; }
+    .commands-table td:nth-child(2) { min-width:130px; }
+    .commands-table td:nth-child(3), .commands-table td:nth-child(5) { white-space:nowrap; }
+    .commands-table td:nth-child(6) { width:420px; }
+    .command-edit summary { cursor:pointer; display:inline-flex; align-items:center; justify-content:center; min-width:92px; padding:8px 12px; border-radius:999px; background:var(--surface-2); color:var(--ink); font-weight:700; list-style:none; }
+    .command-edit summary::-webkit-details-marker { display:none; }
+    .command-edit[open] summary { margin-bottom:10px; }
+    .command-edit form { min-width:380px; display:grid; gap:8px; }
+    .command-edit textarea { min-height:64px; }
+    .alert-card { border-color:color-mix(in srgb, var(--danger) 45%, var(--line)); background:color-mix(in srgb, var(--danger) 10%, var(--card)); }
+    .alert-card strong { color:var(--danger); }
+    .compact-profile { display:grid; grid-template-columns:1.2fr 1fr; gap:14px; align-items:start; }
+    .compact-profile .summary { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .profile-facts { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+    .profile-fact { padding:10px 12px; border-radius:12px; background:var(--surface); border:1px solid var(--line); }
+    .profile-fact strong { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .panel-details summary { cursor:pointer; font-weight:800; list-style:none; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .panel-details summary::-webkit-details-marker { display:none; }
+    .panel-details summary::after { content:"Abrir"; font-size:12px; font-weight:700; color:var(--accent); }
+    .panel-details[open] summary::after { content:"Cerrar"; }
+    .sales-strip { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
+    .sales-card { padding:14px; border-radius:14px; background:var(--surface); border:1px solid var(--line); }
+    .sales-card h3 { font-size:26px; margin:6px 0 2px; }
+    body.dark .hero { background:linear-gradient(180deg, rgba(16,25,23,.95) 0%, rgba(15,23,21,.9) 100%); }
+    body.dark .card { background:linear-gradient(180deg, rgba(17,26,24,.98) 0%, rgba(15,22,21,.95) 100%); }
+    body.dark .side-link { background:linear-gradient(180deg, rgba(18,28,26,.96) 0%, rgba(15,23,21,.94) 100%); }
+    body.dark .side-link.active { background:linear-gradient(180deg, rgba(26,56,49,.98) 0%, rgba(19,44,39,.98) 100%); color:#f7f1e7; border-color:#3d665c; box-shadow:0 10px 24px rgba(0,0,0,.22); }
+    body.dark .metric { background:linear-gradient(180deg, rgba(24,36,33,.98) 0%, rgba(19,30,28,.96) 100%); }
+    body.dark .preview-card { background:linear-gradient(180deg, rgba(20,31,29,.98) 0%, rgba(18,28,26,.96) 100%); }
+    body.dark .mini-card { background:linear-gradient(180deg, rgba(21,32,29,.98) 0%, rgba(18,29,27,.96) 100%); }
+    body.dark .subnav a { background:linear-gradient(180deg, rgba(31,45,41,.96) 0%, rgba(26,37,35,.96) 100%); color:#f7f1e7; border:1px solid #314541; }
+    body.dark .theme-toggle { background:linear-gradient(180deg, rgba(20,31,29,.98) 0%, rgba(16,25,23,.98) 100%); }
+    body.dark .flash { color:#dff7ea; }
+    body.dark .pill { background:#243631; color:#dbf8ec; }
+    body.dark .ok { background:#173a30; color:#92efc9; }
+    body.dark .off { background:#432421; color:#ffb7b0; }
+    body.dark button { box-shadow:0 10px 24px rgba(0,0,0,.18); }
+    body.dark button.secondary { color:#2d1c08; }
+    body.dark input::placeholder, body.dark textarea::placeholder { color:#7f938a; }
+    body.dark .telegram-bubble { border:1px solid rgba(255,255,255,.06); }
+    @media (max-width: 1100px) { .layout, .grid, .section-grid, .summary, .three, .preview-grid, .command-tools, .compact-profile, .sales-strip { grid-template-columns:1fr; } .sidebar { position:static; } .toolbar { align-items:stretch; flex-direction:column; } .toolbar-right, .search-form { width:100%; } .search-form { min-width:0; } .search-form input { min-width:0; } }
+    @media (max-width: 760px) {
+      .wrap { padding:10px; }
+      .hero, .card { border-radius:12px; padding:12px; box-shadow:none; }
+      .hero { margin-bottom:12px; }
+      h1 { font-size:24px; }
+      h2 { font-size:20px; }
+      .layout, .content { gap:12px; }
+      .sidebar { display:flex; overflow-x:auto; gap:8px; padding-bottom:4px; scroll-snap-type:x mandatory; }
+      .side-link { flex:0 0 auto; min-width:132px; padding:10px; text-align:center; font-size:13px; scroll-snap-align:start; }
+      .inline, .profile-facts { grid-template-columns:1fr; }
+      .toolbar-right, .search-form { flex-direction:column; align-items:stretch; gap:8px; }
+      .search-form button, .theme-toggle { width:100%; }
+      .subnav { display:flex; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; }
+      .subnav a { flex:0 0 auto; text-align:center; white-space:nowrap; }
+      table { display:block; overflow:auto; white-space:nowrap; font-size:12px; max-height:70vh; border:1px solid var(--line); border-radius:12px; }
+      thead th { position:sticky; top:0; z-index:1; background:var(--card); }
+      th, td { padding:8px 6px; }
+      td { max-width:240px; overflow:hidden; text-overflow:ellipsis; }
+      td details, td form, td .small { white-space:normal; }
+      .actions { display:grid; grid-template-columns:1fr; align-items:stretch; }
+      .metric { padding:12px; }
+      .metric h3, .sales-card h3 { font-size:22px; overflow-wrap:anywhere; }
+      input, select, textarea, button { min-height:42px; }
+      .command-edit form { min-width:0; }
+      .preview-grid { display:none; }
+    }
+  </style>
+</head>
+<body data-section="{{ active_section }}">
+  <div class="wrap">
+    <div class="hero">
+      <div class="toolbar">
+        <div>
+          <h1>NEXORA ONE · Administración</h1>
+          <p id="panel-save-status" class="small" role="status" aria-live="polite"></p>
+          <p class="muted">Aquí puedes gestionar catálogo, info visible, precios, estados y paquetes de compra sin tocar Python.</p>
+          <p class="small">Sesión: <strong>{{ session.get('panel_user') or 'admin' }}</strong> · Rol: <strong>{{ panel_role }}</strong></p>
+        </div>
+        <div class="toolbar-right">
+          <form method="get" action="{{ url_for('admin_panel') }}" class="search-form">
+            <input type="hidden" name="section" value="buscar">
+            <input name="gq" value="{{ global_q }}" placeholder="Buscar ID, username, comando o vendedor">
+            <button type="submit">Buscar</button>
+          </form>
+          <button class="theme-toggle" type="button" onclick="toggleTheme()">Tema</button>
+          <a href="{{ url_for('panel_logout') }}">Cerrar sesión</a>
+        </div>
+      </div>
+      {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+      {% if error_logs %}
+      <div class="flash alert-card">
+        <strong>Alerta de errores 500:</strong>
+        último error en <code>{{ error_logs[0].method }} {{ error_logs[0].path }}</code>
+        <span class="small">{{ error_logs[0].created_at or '' }}</span>
+        · <a href="{{ url_for('admin_panel', section='sistema') }}">Ver logs</a>
+      </div>
+      {% endif %}
+      {% if health_summary.runtime.last_polling_conflict %}
+      <div class="flash alert-card">
+        <strong>Alerta Telegram polling:</strong>
+        se detectó otro proceso usando el mismo token.
+        <span class="small">Último conflicto: {{ health_summary.runtime.last_polling_conflict }}</span>
+        <form method="post" action="{{ url_for('admin_clear_polling_alert') }}" style="margin-top:10px; max-width:240px;">
+          <button class="secondary" type="submit">Limpiar alerta</button>
+        </form>
+      </div>
+      {% endif %}
+      <p class="small">Panel privado NEXORA ONE conectado a tu entorno de producción.</p>
+      <div class="subnav">
+        {% for nav in panel_nav_items[:9] %}
+        <a href="{{ url_for('admin_panel', section=nav.section) }}">{{ nav.label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="layout">
+      <div class="sidebar">
+        {% for nav in panel_nav_items %}
+        <a class="side-link {% if active_section == nav.section %}active{% endif %}" href="{{ url_for('admin_panel', section=nav.section) }}">{{ nav.label }}</a>
+        {% endfor %}
+      </div>
+      <div class="content">
+      {% if active_section == 'resumen' %}
+      <div id="sec-resumen" class="card">
+        <h2>Resumen</h2>
+        <div class="summary">
+          <div class="metric"><span class="pill">Categorías</span><h3>{{ categories|length }}</h3><div class="small">Bloques del catálogo</div></div>
+          <div class="metric"><span class="pill">Comandos</span><h3>{{ commands|length }}</h3><div class="small">Total registrados</div></div>
+          <div class="metric"><span class="pill">Activos</span><h3>{{ commands|selectattr('is_active')|list|length }}</h3><div class="small">Disponibles para uso</div></div>
+          <div class="metric"><span class="pill">Paquetes</span><h3>{{ buy_packages|length }}</h3><div class="small">Líneas para /buy</div></div>
+        </div>
+        <div class="preview-grid">
+          <div class="preview-card">
+            <strong>Preview /start</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.start }}</div></div>
+          </div>
+          <div class="preview-card">
+            <strong>Preview /buy</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.buy }}</div></div>
+          </div>
+          <div class="preview-card">
+            <strong>Preview /cmds</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.cmds }}</div></div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'buscar' %}
+      <div class="stack">
+        <div class="card">
+          <h2>Buscador global</h2>
+          <p class="small">Busca en usuarios, compras, historial y solicitudes desde un solo lugar.</p>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-top:14px;">
+            <input type="hidden" name="section" value="buscar">
+            <input name="gq" value="{{ global_q }}" placeholder="ID, username, comando, vendedor, plan o texto">
+            <button type="submit">Buscar</button>
+          </form>
+          <div class="summary" style="margin-top:14px;">
+            <div class="metric"><span class="pill">Usuarios</span><h3>{{ global_results.users|length }}</h3><div class="small">Coincidencias</div></div>
+            <div class="metric"><span class="pill">Compras</span><h3>{{ global_results.purchases|length }}</h3><div class="small">Coincidencias</div></div>
+            <div class="metric"><span class="pill">Historial</span><h3>{{ global_results.history|length }}</h3><div class="small">Coincidencias</div></div>
+            <div class="metric"><span class="pill">Solicitudes</span><h3>{{ global_results.requests|length }}</h3><div class="small">Coincidencias</div></div>
+          </div>
+        </div>
+        {% if not global_q %}
+        <div class="card"><p>Escribe algo arriba para buscar en todo el panel.</p></div>
+        {% else %}
+        <div class="section-grid">
+          <div class="card">
+            <h3>Usuarios</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Perfil</th><th>Estado</th><th>Acciones</th></tr></thead>
+              <tbody>
+                {% for user in global_results.users %}
+                <tr>
+                  <td><strong>{{ user.id_tg }}</strong></td>
+                  <td>{{ user.rol_tg or 'FREE' }}<div class="small">{{ user.user_web or user.number_wsp or '—' }}</div></td>
+                  <td>{{ user.plan or 'FREE' }} · {{ user.estado or '—' }}<div class="small">{{ user.creditos or 0 }} cr</div></td>
+                  <td><a href="{{ url_for('admin_panel', section='usuario', uid=user.id_tg) }}">Perfil</a></td>
+                </tr>
+                {% endfor %}
+                {% if not global_results.users %}
+                <tr><td colspan="4">Sin usuarios.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Compras</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Usuario</th><th>Compra</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in global_results.purchases %}
+                <tr>
+                  <td>#{{ row.ID }}</td>
+                  <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a><div class="small">Vendedor: {{ row.VENDEDOR or '—' }}</div></td>
+                  <td>{{ row.COMPRO or '—' }}<div class="small">{{ row.ESTADO or 'ENTREGADA' }}{% if row.NOTAS %} · {{ row.NOTAS }}{% endif %}</div></td>
+                  <td>{{ row.FECHA or '—' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not global_results.purchases %}
+                <tr><td colspan="4">Sin compras.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Historial</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Usuario</th><th>Consulta</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in global_results.history %}
+                <tr>
+                  <td>#{{ row.ID }}</td>
+                  <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a></td>
+                  <td><strong>/{{ row.consulta }}</strong><div class="small">{{ row.valor or '—' }} · {{ row.plataforma or '—' }}</div></td>
+                  <td>{{ row.fecha or '—' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not global_results.history %}
+                <tr><td colspan="4">Sin historial.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Solicitudes</h3>
+            <table>
+              <thead><tr><th>ID</th><th>Usuario</th><th>Solicitud</th><th>Estado</th></tr></thead>
+              <tbody>
+                {% for req in global_results.requests %}
+                <tr>
+                  <td>#{{ req.id }}</td>
+                  <td><a href="{{ url_for('admin_panel', section='usuario', uid=req.user_id) }}">{{ req.user_id }}</a><div class="small">{{ req.username or '—' }}</div></td>
+                  <td>/{{ req.command }}<div class="small">{{ req.payload or req.resolution_note or '—' }}</div></td>
+                  <td>{{ req.status or '—' }}<div class="small">{{ req.created_at or '—' }}</div></td>
+                </tr>
+                {% endfor %}
+                {% if not global_results.requests %}
+                <tr><td colspan="4">Sin solicitudes.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if active_section == 'usuarios' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Usuarios</h2>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+          <input type="hidden" name="section" value="usuarios">
+          <input name="uq" value="{{ user_q }}" placeholder="Buscar por ID, rol, web o wsp">
+          <select name="ustatus">
+            <option value="">Todos los estados</option>
+            <option value="ACTIVO" {% if user_status == 'ACTIVO' %}selected{% endif %}>ACTIVO</option>
+            <option value="BANEADO" {% if user_status == 'BANEADO' %}selected{% endif %}>BANEADO</option>
+          </select>
+          <select name="uplan">
+            <option value="">Todos los planes</option>
+            <option value="FREE" {% if user_plan == 'FREE' %}selected{% endif %}>FREE</option>
+            <option value="BASICO" {% if user_plan == 'BASICO' %}selected{% endif %}>BASICO</option>
+            <option value="STANDARD" {% if user_plan == 'STANDARD' %}selected{% endif %}>STANDARD</option>
+            <option value="PREMIUM" {% if user_plan == 'PREMIUM' %}selected{% endif %}>PREMIUM</option>
+          </select>
+          <button type="submit">Filtrar</button>
+        </form>
+        <table>
+          <thead><tr><th>ID</th><th>Perfil</th><th>Estado actual</th><th>Editar</th></tr></thead>
+          <tbody>
+            {% if admin_users %}
+              {% for user in admin_users %}
+              <tr>
+                <td><strong>{{ user.id_tg }}</strong></td>
+                <td>
+                  <div><strong>{{ user.rol_tg or 'FREE' }}</strong></div>
+                  <div class="small">WEB: {{ user.user_web or '—' }} | WSP: {{ user.number_wsp or '—' }}</div>
+                  <div class="small"><a href="{{ url_for('admin_panel', section='usuario', uid=user.id_tg) }}">Abrir perfil</a></div>
+                </td>
+                <td>
+                  <div>Plan: {{ user.plan }}</div>
+                  <div>Estado: {{ user.estado }}</div>
+                  <div>Créditos: {{ user.creditos }}</div>
+                  <div>Antispam: {{ user.antispam }}</div>
+                </td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_save_user') }}">
+                    <input type="hidden" name="id_tg" value="{{ user.id_tg }}">
+                    <div class="inline">
+                      <input name="creditos" type="number" min="0" value="{{ user.creditos or 0 }}">
+                      <input name="antispam" type="number" min="0" value="{{ user.antispam or 0 }}">
+                    </div>
+                    <div class="inline">
+                      <select name="plan">
+                        <option value="FREE" {% if user.plan == 'FREE' %}selected{% endif %}>FREE</option>
+                        <option value="BASICO" {% if user.plan == 'BASICO' %}selected{% endif %}>BASICO</option>
+                        <option value="STANDARD" {% if user.plan == 'STANDARD' %}selected{% endif %}>STANDARD</option>
+                        <option value="PREMIUM" {% if user.plan == 'PREMIUM' %}selected{% endif %}>PREMIUM</option>
+                      </select>
+                      <select name="rol_tg">
+                        <option value="FREE" {% if user.rol_tg == 'FREE' %}selected{% endif %}>FREE</option>
+                        <option value="CLIENTE" {% if user.rol_tg == 'CLIENTE' %}selected{% endif %}>CLIENTE</option>
+                        <option value="SELLER" {% if user.rol_tg == 'SELLER' %}selected{% endif %}>SELLER</option>
+                        <option value="CO-FUNDADOR" {% if user.rol_tg == 'CO-FUNDADOR' %}selected{% endif %}>CO-FUNDADOR</option>
+                        <option value="FUNDADOR" {% if user.rol_tg == 'FUNDADOR' %}selected{% endif %}>FUNDADOR</option>
+                      </select>
+                      <select name="estado">
+                        <option value="ACTIVO" {% if user.estado == 'ACTIVO' %}selected{% endif %}>ACTIVO</option>
+                        <option value="BANEADO" {% if user.estado == 'BANEADO' %}selected{% endif %}>BANEADO</option>
+                      </select>
+                    </div>
+                    <button type="submit">Guardar usuario</button>
+                  </form>
+                  <div class="actions" style="margin-top:8px; flex-wrap:wrap;">
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="owner"><button class="secondary" type="submit">Dueño</button></form>
+                    <form method="post" action="{{ url_for('admin_user_action') }}" data-confirm="{{ '¿Desbanear este usuario?' if user.estado == 'BANEADO' else '¿Banear este usuario?' }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="{{ 'unban' if user.estado == 'BANEADO' else 'ban' }}"><button class="{{ 'secondary' if user.estado == 'BANEADO' else 'danger' }}" type="submit">{{ 'Desbanear' if user.estado == 'BANEADO' else 'Banear' }}</button></form>
+                  </div>
+                  <div class="actions" style="margin-top:8px; flex-wrap:wrap;">
+                    {% for amount in [10,50,100,500] %}
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="credits_{{ amount }}"><button type="submit">+{{ amount }} cr</button></form>
+                    {% endfor %}
+                  </div>
+                  <div class="actions" style="margin-top:8px; flex-wrap:wrap;">
+                    {% for days in [7,15,30,60] %}
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="plan_{{ days }}"><button class="secondary" type="submit">+{{ days }} días</button></form>
+                    {% endfor %}
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="4">No se encontraron usuarios con ese filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'usuario' %}
+      <div class="stack">
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Perfil de usuario</h2>
+              <p class="small">Vista completa de datos, compras, historial y solicitudes.</p>
+            </div>
+            <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="min-width:360px;">
+              <input type="hidden" name="section" value="usuario">
+              <input name="uid" value="{{ profile_user_id }}" placeholder="ID usuario">
+              <button type="submit">Abrir</button>
+            </form>
+          </div>
+          {% if user_profile.user %}
+          <div class="compact-profile">
+            <div class="summary">
+              <div class="metric"><span class="pill">ID</span><h3>{{ user_profile.user.id_tg }}</h3><div class="small">Telegram</div></div>
+              <div class="metric"><span class="pill">Rol</span><h3>{{ user_profile.user.rol_tg or 'FREE' }}</h3><div class="small">{{ user_profile.user.estado or '—' }}</div></div>
+              <div class="metric"><span class="pill">Plan</span><h3>{{ user_profile.user.plan or 'FREE' }}</h3><div class="small">{{ user_profile.user.fecha_caducidad or 'Sin vencimiento' }}</div></div>
+              <div class="metric"><span class="pill">Créditos</span><h3>{{ user_profile.user.creditos or 0 }}</h3><div class="small">Antispam {{ user_profile.user.antispam or 0 }}s</div></div>
+            </div>
+            <div class="profile-facts">
+              <div class="profile-fact"><strong>Web</strong>{{ user_profile.user.user_web or '—' }}<div class="small">{{ user_profile.user.register_web or 'Sin registro' }}</div></div>
+              <div class="profile-fact"><strong>WSP</strong>{{ user_profile.user.number_wsp or '—' }}<div class="small">{{ user_profile.user.register_wsp or 'Sin registro' }}</div></div>
+              <div class="profile-fact"><strong>Compras</strong>{{ user_profile.purchases|length }}</div>
+              <div class="profile-fact"><strong>Consultas</strong>{{ user_profile.history|length }}</div>
+              <div class="profile-fact"><strong>Keys</strong>{{ user_profile['keys']|length }}</div>
+              <div class="profile-fact"><strong>Solicitudes</strong>{{ user_profile.requests|length }}</div>
+            </div>
+          </div>
+          <form method="post" action="{{ url_for('admin_user_message') }}" class="inline" style="margin-top:14px;">
+            <input type="hidden" name="id_tg" value="{{ user_profile.user.id_tg }}">
+            <input name="message" placeholder="Mensaje directo al usuario" required>
+            <button type="submit">Enviar DM</button>
+          </form>
+          {% else %}
+          <p>No se encontró usuario. Escribe un ID y abre el perfil.</p>
+          {% endif %}
+        </div>
+        {% if user_profile.user %}
+        <div class="section-grid">
+          <details class="card panel-details" open>
+            <summary>Compras <a href="{{ url_for('admin_panel', section='compras', purchase_user=profile_user_id) }}">Ver todas</a></summary>
+            <table>
+              <thead><tr><th>ID</th><th>Compra</th><th>Vendedor</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in user_profile.purchases %}
+                <tr><td>#{{ row.ID }}</td><td>{{ row.COMPRO or '—' }}<div class="small">{{ row.ESTADO or 'ENTREGADA' }}</div></td><td>{{ row.VENDEDOR or '—' }}</td><td>{{ row.FECHA or '—' }}</td></tr>
+                {% endfor %}
+                {% if not user_profile.purchases %}<tr><td colspan="4">Sin compras.</td></tr>{% endif %}
+              </tbody>
+            </table>
+          </details>
+          <details class="card panel-details">
+            <summary>Historial <a href="{{ url_for('admin_panel', section='historial', history_user=profile_user_id) }}">Ver todo</a></summary>
+            <table>
+              <thead><tr><th>ID</th><th>Comando</th><th>Valor</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in user_profile.history %}
+                <tr><td>#{{ row.ID }}</td><td>/{{ row.consulta }}</td><td>{{ row.valor or '—' }}</td><td>{{ row.fecha or '—' }}</td></tr>
+                {% endfor %}
+                {% if not user_profile.history %}<tr><td colspan="4">Sin historial.</td></tr>{% endif %}
+              </tbody>
+            </table>
+          </details>
+        </div>
+        <details class="card panel-details" open>
+          <summary>Actividad reciente</summary>
+          <table>
+            <thead><tr><th>Tipo</th><th>Detalle</th><th>Info</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for item in user_profile.activity %}
+              <tr><td>{{ item.type }}</td><td><strong>{{ item.label }}</strong></td><td>{{ item.detail }}</td><td>{{ item.date or '—' }}</td></tr>
+              {% endfor %}
+              {% if not user_profile.activity %}<tr><td colspan="4">Sin actividad.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        <details class="card panel-details">
+          <summary>Keys canjeadas</summary>
+          <table>
+            <thead><tr><th>ID</th><th>Key</th><th>Tipo</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for key in user_profile['keys'] %}
+              <tr><td>#{{ key.id }}</td><td><strong>{{ key.key }}</strong></td><td>{{ key.tipo or '—' }}</td><td>{{ key.cantidad or 0 }}</td><td>{{ key.fecha_canje or '—' }}</td></tr>
+              {% endfor %}
+              {% if not user_profile['keys'] %}<tr><td colspan="5">Sin keys canjeadas.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        <details class="card panel-details">
+          <summary>Solicitudes</summary>
+          <table>
+            <thead><tr><th>ID</th><th>Comando</th><th>Estado</th><th>Costo</th><th>Pedido</th><th>Cierre</th></tr></thead>
+            <tbody>
+              {% for req in user_profile.requests %}
+              <tr>
+                <td>#{{ req.id }}</td>
+                <td>/{{ req.command }}</td>
+                <td><span class="badge {% if req.status == 'resolved' %}ok{% else %}off{% endif %}">{{ req.status }}</span></td>
+                <td>{{ req.cost }}</td>
+                <td>{{ req.payload or '—' }}</td>
+                <td>{{ req.resolved_at or '—' }}<div class="small">{{ req.resolution_note or '' }}</div></td>
+              </tr>
+              {% endfor %}
+              {% if not user_profile.requests %}<tr><td colspan="6">Sin solicitudes.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if active_section == 'compras' %}
+      <div class="stack">
+        <div class="card">
+          <h2>Crear compra manual</h2>
+          <form method="post" action="{{ url_for('admin_create_purchase') }}" class="inline">
+            <input name="id_tg" value="{{ purchase_user }}" placeholder="ID usuario" required>
+            <input name="vendedor" value="{{ seller_vendor_scope or purchase_vendor or panel_user }}" placeholder="Vendedor" {% if seller_vendor_scope %}readonly{% endif %}>
+            <input name="compro" placeholder="Ej: CREDITOS +100 / PLAN 30 DIAS" required>
+            <select name="estado">
+              {% for status in purchase_statuses %}
+              <option value="{{ status }}" {% if status == 'ENTREGADA' %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <input name="notas" placeholder="Nota interna">
+            <input name="comprobante" placeholder="Comprobante o URL">
+            <button type="submit">Crear compra</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Compras</h2>
+              <p class="small">Filtra ventas por cliente, vendedor, fecha y tipo.</p>
+            </div>
+            <div class="toolbar-right">
+              <a href="{{ url_for('admin_export_purchases_csv', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status) }}">CSV</a>
+              <a href="{{ url_for('admin_export_purchases_json', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status) }}">JSON</a>
+            </div>
+          </div>
+          <div class="summary" style="margin-bottom:14px;">
+            {% for item in dashboard.ventas_por_periodo %}
+            <div class="metric"><span class="pill">{{ item.label }}</span><h3>{{ item.total }}</h3><div class="small">Cred: {{ item.creditos }} · Días: {{ item.dias }}</div></div>
+            {% endfor %}
+            {% for item in dashboard.ventas_por_tipo %}
+            <div class="metric"><span class="pill">{{ item.tipo }}</span><h3>{{ item.total }}</h3><div class="small">Clasificación global</div></div>
+            {% endfor %}
+          </div>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+            <input type="hidden" name="section" value="compras">
+            <input name="purchase_user" value="{{ purchase_user }}" placeholder="ID usuario">
+            <input name="purchase_vendor" value="{{ purchase_vendor }}" placeholder="ID vendedor" {% if seller_vendor_scope %}readonly{% endif %}>
+            <input name="purchase_from" type="date" value="{{ purchase_from }}">
+            <input name="purchase_to" type="date" value="{{ purchase_to }}">
+            <select name="purchase_kind">
+              <option value="">Todo tipo</option>
+              <option value="credits" {% if purchase_kind == 'credits' %}selected{% endif %}>Créditos</option>
+              <option value="days" {% if purchase_kind == 'days' %}selected{% endif %}>Días</option>
+            </select>
+            <select name="purchase_status">
+              <option value="">Todo estado</option>
+              {% for status in purchase_statuses %}
+              <option value="{{ status }}" {% if purchase_status == status %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="summary">
+            <div class="metric"><span class="pill">Registros</span><h3>{{ purchases|length }}</h3><div class="small">Resultado actual</div></div>
+            <div class="metric"><span class="pill">Clientes</span><h3>{{ purchases|map(attribute='ID_TG')|unique|list|length }}</h3><div class="small">En filtro</div></div>
+            <div class="metric"><span class="pill">Vendedores</span><h3>{{ purchases|map(attribute='VENDEDOR')|unique|list|length }}</h3><div class="small">En filtro</div></div>
+            <div class="metric"><span class="pill">Estado</span><h3>{{ purchase_status or 'Todo' }}</h3><div class="small">{{ purchase_kind or 'Todo tipo' }}</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>ID</th><th>Usuario</th><th>Vendedor</th><th>Compra</th><th>Fecha</th><th>Estado y notas</th></tr></thead>
+            <tbody>
+              {% for row in purchases %}
+              <tr>
+                <td>#{{ row.ID }}</td>
+                <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a></td>
+                <td>{{ row.VENDEDOR or '—' }}</td>
+                <td><strong>{{ row.COMPRO or '—' }}</strong></td>
+                <td>{{ row.FECHA or '—' }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_update_purchase') }}">
+                    <input type="hidden" name="purchase_id" value="{{ row.ID }}">
+                    <input type="hidden" name="purchase_user" value="{{ purchase_user }}">
+                    <input type="hidden" name="purchase_vendor" value="{{ purchase_vendor }}">
+                    <input type="hidden" name="purchase_from" value="{{ purchase_from }}">
+                    <input type="hidden" name="purchase_to" value="{{ purchase_to }}">
+                    <input type="hidden" name="purchase_kind" value="{{ purchase_kind }}">
+                    <input type="hidden" name="purchase_status" value="{{ purchase_status }}">
+                    <select name="estado">
+                      {% for status in purchase_statuses %}
+                      <option value="{{ status }}" {% if (row.ESTADO or 'ENTREGADA') == status %}selected{% endif %}>{{ status }}</option>
+                      {% endfor %}
+                    </select>
+                    <input name="notas" value="{{ row.NOTAS or '' }}" placeholder="Nota interna">
+                    <input name="comprobante" value="{{ row.COMPROBANTE or '' }}" placeholder="Comprobante o URL">
+                    <button type="submit">Guardar</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not purchases %}
+              <tr><td colspan="6">No hay compras con ese filtro.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'historial' %}
+      <div class="stack">
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Historial de consultas</h2>
+              <p class="small">Revisa consultas por usuario, comando, plataforma y fecha.</p>
+            </div>
+            <div class="toolbar-right">
+              <a href="{{ url_for('admin_export_history_csv', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q) }}">CSV</a>
+              <a href="{{ url_for('admin_export_history_json', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q) }}">JSON</a>
+            </div>
+          </div>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+            <input type="hidden" name="section" value="historial">
+            <input name="history_user" value="{{ history_user }}" placeholder="ID usuario">
+            <input name="history_q" value="{{ history_q }}" placeholder="Buscar valor">
+            <select name="history_command">
+              <option value="">Todos los comandos</option>
+              {% for slug in history_commands %}
+              <option value="{{ slug }}" {% if history_command == slug %}selected{% endif %}>/{{ slug }}</option>
+              {% endfor %}
+            </select>
+            <select name="history_platform">
+              <option value="">Todas las plataformas</option>
+              <option value="TG" {% if history_platform == 'TG' %}selected{% endif %}>TG</option>
+              <option value="WEB" {% if history_platform == 'WEB' %}selected{% endif %}>WEB</option>
+              <option value="WSP" {% if history_platform == 'WSP' %}selected{% endif %}>WSP</option>
+            </select>
+            <input name="history_from" type="date" value="{{ history_from }}">
+            <input name="history_to" type="date" value="{{ history_to }}">
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="summary">
+            <div class="metric"><span class="pill">Registros</span><h3>{{ history_rows|length }}</h3><div class="small">Resultado actual</div></div>
+            <div class="metric"><span class="pill">Usuarios</span><h3>{{ history_rows|map(attribute='ID_TG')|unique|list|length }}</h3><div class="small">En filtro</div></div>
+            <div class="metric"><span class="pill">Comandos</span><h3>{{ history_rows|map(attribute='consulta')|unique|list|length }}</h3><div class="small">En filtro</div></div>
+            <div class="metric"><span class="pill">Plataforma</span><h3>{{ history_platform or 'Todas' }}</h3><div class="small">Filtro elegido</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Valor</th><th>Plataforma</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for row in history_rows %}
+              <tr>
+                <td>#{{ row.ID }}</td>
+                <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a></td>
+                <td><strong>/{{ row.consulta }}</strong></td>
+                <td>{{ row.valor or '—' }}</td>
+                <td>{{ row.plataforma or '—' }}</td>
+                <td>{{ row.fecha or '—' }}</td>
+              </tr>
+              {% endfor %}
+              {% if not history_rows %}
+              <tr><td colspan="6">No hay historial con ese filtro.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'vendedores' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Vendedores</h2>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+          <input type="hidden" name="section" value="vendedores">
+          <input name="vq" value="{{ vendor_q }}" placeholder="Buscar por ID vendedor">
+          <input name="vendor" value="{{ selected_vendor }}" placeholder="Ver detalle exacto de vendedor">
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary">
+          <div class="metric"><span class="pill">Vendedores</span><h3>{{ vendor_summary|length }}</h3><div class="small">Con ventas registradas</div></div>
+          <div class="metric"><span class="pill">Ventas</span><h3>{{ vendor_total_sales }}</h3><div class="small">Total en ranking actual</div></div>
+          <div class="metric"><span class="pill">Detalle</span><h3>{{ vendor_detail|length }}</h3><div class="small">Registros del vendedor elegido</div></div>
+          <div class="metric"><span class="pill">Último</span><h3>{{ selected_vendor or '—' }}</h3><div class="small">Vendedor en foco</div></div>
+        </div>
+      </div>
+      <div class="section-grid">
+      <div class="card">
+        <h2>Ranking</h2>
+        <table>
+          <thead><tr><th>Vendedor</th><th>Ventas</th><th>Última venta</th><th>Ver</th></tr></thead>
+          <tbody>
+            {% if vendor_summary %}
+              {% for item in vendor_summary %}
+              <tr>
+                <td><strong>{{ item.vendedor }}</strong></td>
+                <td>{{ item.total_ventas }}</td>
+                <td>{{ item.ultima_venta or '—' }}</td>
+                <td><a href="{{ url_for('admin_panel', section='vendedores', vendor=item.vendedor, vq=vendor_q) }}">Abrir</a></td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="4">No hay ventas registradas para ese filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Detalle de ventas</h2>
+        <div class="small" style="margin-bottom:12px;">Mostrando ventas para: <strong>{{ selected_vendor or '—' }}</strong></div>
+        <table>
+          <thead><tr><th>Cliente</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+          <tbody>
+            {% if vendor_detail %}
+              {% for row in vendor_detail %}
+              <tr>
+                <td>{{ row.ID_TG }}</td>
+                <td>{{ row.COMPRO or '—' }}</td>
+                <td>{{ row.FECHA or '—' }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="3">Selecciona un vendedor para ver detalle.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'solicitudes' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Vista de solicitudes</h2>
+        <div class="toolbar-right" style="margin-bottom:12px;">
+          <a href="{{ url_for('admin_export_requests_csv', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to) }}">CSV</a>
+          <a href="{{ url_for('admin_export_requests_json', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to) }}">JSON</a>
+        </div>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+          <input type="hidden" name="section" value="solicitudes">
+          <input name="rq" value="{{ request_q }}" placeholder="Buscar por id, usuario, comando o nota">
+          <select name="rstatus">
+            <option value="">Todos los estados</option>
+            <option value="pending" {% if request_status == 'pending' %}selected{% endif %}>Pendientes</option>
+            <option value="resolved" {% if request_status == 'resolved' %}selected{% endif %}>Resueltas</option>
+            <option value="cancelled" {% if request_status == 'cancelled' %}selected{% endif %}>Canceladas</option>
+            <option value="failed" {% if request_status == 'failed' %}selected{% endif %}>Fallidas</option>
+          </select>
+          <select name="rcommand">
+            <option value="">Todos los comandos</option>
+            {% for slug in request_command_options %}
+            <option value="{{ slug }}" {% if request_command == slug %}selected{% endif %}>/{{ slug }}</option>
+            {% endfor %}
+          </select>
+          <input name="rfrom" type="date" value="{{ request_from }}">
+          <input name="rto" type="date" value="{{ request_to }}">
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary">
+          <div class="metric"><span class="pill">Pendientes</span><h3>{{ request_counts.pending }}</h3><div class="small">Sin resolver</div></div>
+          <div class="metric"><span class="pill">Resueltas</span><h3>{{ request_counts.resolved }}</h3><div class="small">Atendidas con envío</div></div>
+          <div class="metric"><span class="pill">Canceladas</span><h3>{{ request_counts.cancelled }}</h3><div class="small">Cerradas sin cobro</div></div>
+          <div class="metric"><span class="pill">Fallidas</span><h3>{{ request_counts.failed }}</h3><div class="small">Sin resultados o error</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div>
+            <h2>Solicitudes pendientes</h2>
+            <p class="small">Aquí ves lo que sigue sin respuesta en el flujo manual del bot.</p>
+          </div>
+          <div class="pill">{{ pending_requests|length }} pendientes</div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Costo</th><th>Estado</th><th>Referencia admin</th><th>Acción</th></tr></thead>
+          <tbody>
+            {% if filtered_pending_requests %}
+              {% for req in filtered_pending_requests %}
+              <tr>
+                <td><strong>#{{ req.id }}</strong></td>
+                <td>
+                  <strong>{% if req.username %}@{{ req.username }}{% else %}{{ req.user_id }}{% endif %}</strong>
+                  <div class="small">ID: {{ req.user_id }}</div>
+                </td>
+                <td>
+                  /{{ req.command }}<div class="small">{{ req.payload or '—' }}</div>
+                  {% if req.attachment_file_id %}
+                  <div class="small"><a href="{{ url_for('admin_request_attachment', request_id=req.id) }}" target="_blank">Ver adjunto{% if req.attachment_type %}: {{ req.attachment_type }}{% endif %}</a></div>
+                  {% endif %}
+                </td>
+                <td>{{ req.cost }}</td>
+                <td><span class="badge {% if req.status == 'pending' %}off{% else %}ok{% endif %}">{{ req.status }}</span><div class="small">{{ req.created_at or '—' }}</div></td>
+                <td>{{ req.admin_msg_id or '—' }}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Atender</summary>
+                  <form method="post" action="{{ url_for('admin_request_action') }}" class="stack">
+                    <input type="hidden" name="request_id" value="{{ req.id }}">
+                    <input type="hidden" name="rq" value="{{ request_q }}">
+                    <input type="hidden" name="rstatus" value="{{ request_status }}">
+                    <input type="hidden" name="rcommand" value="{{ request_command }}">
+                    <input type="hidden" name="rfrom" value="{{ request_from }}">
+                    <input type="hidden" name="rto" value="{{ request_to }}">
+                    <input name="note" placeholder="Nota interna">
+                    <div class="inline">
+                      <select name="template_key">
+                        <option value="">Plantilla rápida</option>
+                        <option disabled>Globales</option>
+                        {% for tpl in request_templates %}
+                        {% if not tpl.command %}
+                        <option value="{{ tpl.key }}">{{ tpl.key }}{% if tpl.billable %} · cobra{% endif %}</option>
+                        {% endif %}
+                        {% endfor %}
+                        <option disabled>Para /{{ req.command }}</option>
+                        {% for tpl in request_templates %}
+                        {% if tpl.command == req.command %}
+                        <option value="{{ tpl.key }}">{{ tpl.key }}{% if tpl.billable %} · cobra{% endif %}</option>
+                        {% endif %}
+                        {% endfor %}
+                      </select>
+                      <button type="submit" name="action" value="template">Enviar plantilla</button>
+                    </div>
+                    <button class="secondary" type="submit" name="action" value="template_resolve">Enviar plantilla y resolver</button>
+                    <div class="inline">
+                      <button type="submit" name="action" value="resolve">Resolver</button>
+                      <button type="submit" name="action" value="close" data-confirm="¿Cerrar esta solicitud sin cobrar?">Cerrar</button>
+                      <button type="submit" name="action" value="fail" data-confirm="¿Marcar esta solicitud como fallida?">Fallida</button>
+                    </div>
+                  </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="7">No hay solicitudes pendientes.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div>
+            <h2>Historial reciente</h2>
+            <p class="small">Resueltas, canceladas o fallidas con nota y fecha de cierre.</p>
+          </div>
+          <div class="pill">{{ recent_requests|length }} registros</div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Estado</th><th>Nota</th><th>Cierre</th><th>Acción</th></tr></thead>
+          <tbody>
+            {% if filtered_recent_requests %}
+              {% for req in filtered_recent_requests %}
+              <tr>
+                <td><strong>#{{ req.id }}</strong></td>
+                <td>
+                  <strong>{% if req.username %}@{{ req.username }}{% else %}{{ req.user_id }}{% endif %}</strong>
+                  <div class="small">ID: {{ req.user_id }}</div>
+                </td>
+                <td>
+                  /{{ req.command }}<div class="small">{{ req.payload or '—' }}</div>
+                  {% if req.attachment_file_id %}
+                  <div class="small"><a href="{{ url_for('admin_request_attachment', request_id=req.id) }}" target="_blank">Ver adjunto{% if req.attachment_type %}: {{ req.attachment_type }}{% endif %}</a></div>
+                  {% endif %}
+                </td>
+                <td><span class="badge {% if req.status == 'resolved' %}ok{% elif req.status == 'pending' %}off{% else %}pill{% endif %}">{{ req.status }}</span></td>
+                <td>{{ req.resolution_note or '—' }}</td>
+                <td>{{ req.resolved_at or '—' }}<div class="small">Admin: {{ req.resolved_by or '—' }}</div></td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_request_action') }}">
+                    <input type="hidden" name="request_id" value="{{ req.id }}">
+                    <input type="hidden" name="rq" value="{{ request_q }}">
+                    <input type="hidden" name="rstatus" value="{{ request_status }}">
+                    <input type="hidden" name="rcommand" value="{{ request_command }}">
+                    <input type="hidden" name="rfrom" value="{{ request_from }}">
+                    <input type="hidden" name="rto" value="{{ request_to }}">
+                    <button type="submit" name="action" value="reopen">Reabrir</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="7">No hay historial todavía.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Plantillas rápidas</h2>
+        <div class="three">
+          <div class="mini-card"><strong>/templates</strong><div class="small">Lista las plantillas disponibles en Telegram.</div></div>
+          <div class="mini-card"><strong>/rquick 15 nodata</strong><div class="small">Responde usando plantilla rápida.</div></div>
+          <div class="mini-card"><strong>/close 15 motivo</strong><div class="small">Cierra sin cobrar.</div></div>
+          <div class="mini-card"><strong>/fail 15 motivo</strong><div class="small">Marca fallida sin cobrar.</div></div>
+          <div class="mini-card"><strong>/pending</strong><div class="small">Ver pendientes recientes en Telegram.</div></div>
+          <div class="mini-card"><strong>/requestlog 20</strong><div class="small">Historial rápido desde Telegram.</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Editar plantillas</h2>
+        <form method="post" action="{{ url_for('admin_save_request_template') }}" class="stack" style="margin-bottom:14px;">
+          <div class="inline">
+            <input name="key" placeholder="clave, ej. completado_nm" required>
+            <select name="command">
+              <option value="">Global para todos</option>
+              {% for slug in request_command_options %}
+              <option value="{{ slug }}">Solo /{{ slug }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="inline">
+            <select name="billable">
+              <option value="0">Sin cobro</option>
+              <option value="1">Con cobro</option>
+            </select>
+          </div>
+          <textarea name="text" placeholder="Texto de la plantilla" required></textarea>
+          <button type="submit">Crear plantilla</button>
+        </form>
+        <table>
+          <thead><tr><th>Clave</th><th>Comando</th><th>Texto</th><th>Cobro</th><th>Guardar</th></tr></thead>
+          <tbody>
+            {% for tpl in request_templates %}
+            <tr>
+              <td><strong>{{ tpl.key }}</strong></td>
+              <td>
+                <select name="command" form="tpl-{{ tpl.key }}">
+                  <option value="" {% if not tpl.command %}selected{% endif %}>Global</option>
+                  {% for slug in request_command_options %}
+                  <option value="{{ slug }}" {% if tpl.command == slug %}selected{% endif %}>/{{ slug }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                <form id="tpl-{{ tpl.key }}" method="post" action="{{ url_for('admin_save_request_template') }}">
+                  <input type="hidden" name="key" value="{{ tpl.key }}">
+                  <textarea name="text" required>{{ tpl.text }}</textarea>
+              </td>
+              <td>
+                  <select name="billable">
+                    <option value="0" {% if not tpl.billable %}selected{% endif %}>Sin cobro</option>
+                    <option value="1" {% if tpl.billable %}selected{% endif %}>Con cobro</option>
+                  </select>
+              </td>
+              <td><button type="submit">Guardar</button></form></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'keys' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Keys</h2>
+        <p class="small">Genera keys desde el panel o desde Telegram con <code>/genkey dias 12</code> y <code>/genkey creditos 100</code>.</p>
+        <form method="post" action="{{ url_for('admin_generate_keys') }}" class="inline" style="margin-top:14px;">
+          <select name="tipo" required>
+            <option value="creditos">Créditos</option>
+            <option value="dias">Días</option>
+          </select>
+          <input name="cantidad" type="number" min="1" value="100" placeholder="Cantidad" required>
+          <input name="usos" type="number" min="1" value="1" placeholder="Usos por key" required>
+          <input name="total" type="number" min="1" max="100" value="1" placeholder="Total keys" required>
+          <button type="submit">Generar keys</button>
+        </form>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-top:14px;">
+          <input type="hidden" name="section" value="keys">
+          <input name="key_q" value="{{ key_q }}" placeholder="Buscar key o creador">
+          <select name="key_tipo">
+            <option value="">Todos los tipos</option>
+            <option value="creditos" {% if key_tipo == 'creditos' %}selected{% endif %}>Créditos</option>
+            <option value="dias" {% if key_tipo == 'dias' %}selected{% endif %}>Días</option>
+          </select>
+          <select name="key_status">
+            <option value="">Todos los estados</option>
+            <option value="available" {% if key_status == 'available' %}selected{% endif %}>Disponibles</option>
+            <option value="used" {% if key_status == 'used' %}selected{% endif %}>Agotadas</option>
+          </select>
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary" style="margin-top:14px;">
+          <div class="metric"><span class="pill">Total</span><h3>{{ key_counts.total }}</h3><div class="small">Keys creadas</div></div>
+          <div class="metric"><span class="pill">Disponibles</span><h3>{{ key_counts.available }}</h3><div class="small">Con usos restantes</div></div>
+          <div class="metric"><span class="pill">Agotadas</span><h3>{{ key_counts.used }}</h3><div class="small">Sin usos</div></div>
+          <div class="metric"><span class="pill">Canjes</span><h3>{{ key_counts.redemptions }}</h3><div class="small">Últimos visibles</div></div>
+        </div>
+        <div class="subnav">
+          <a href="{{ url_for('admin_export_keys_csv', key_q=key_q, key_tipo=key_tipo, key_status=key_status) }}">Exportar CSV</a>
+          <a href="{{ url_for('admin_export_keys_json', key_q=key_q, key_tipo=key_tipo, key_status=key_status) }}">Exportar JSON</a>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Listado de keys</h2>
+        <table>
+          <thead><tr><th>Key</th><th>Tipo</th><th>Cantidad</th><th>Usos</th><th>Canjes</th><th>Creador</th><th>Fecha</th><th>Acciones</th></tr></thead>
+          <tbody>
+            {% for item in key_items %}
+            <tr>
+              <td><strong>{{ item.key }}</strong></td>
+              <td>{{ item.tipo }}</td>
+              <td>{{ item.cantidad }}</td>
+              <td><span class="badge {% if item.usos > 0 %}ok{% else %}off{% endif %}">{{ item.usos }}</span></td>
+              <td>{{ item.canjes }}</td>
+              <td>{{ item.creador_id }}</td>
+              <td>{{ item.fecha_creacion or '—' }}</td>
+              <td>
+                <form method="post" action="{{ url_for('admin_update_key') }}" style="display:grid; gap:6px; min-width:160px;">
+                  <input type="hidden" name="key" value="{{ item.key }}">
+                  <input type="number" name="usos" min="0" value="{{ item.usos }}">
+                  <button type="submit" name="action" value="set_uses">Guardar usos</button>
+                  <button type="submit" name="action" value="revoke" class="danger">Revocar</button>
+                </form>
+                <form method="post" action="{{ url_for('admin_delete_key') }}" data-confirm="¿Eliminar la key {{ item.key }}? También se eliminarán sus canjes registrados.">
+                  <input type="hidden" name="key" value="{{ item.key }}">
+                  <button type="submit" class="danger">Eliminar key</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if not key_items %}
+            <tr><td colspan="8">Sin keys para este filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Últimos canjes</h2>
+        <table>
+          <thead><tr><th>Key</th><th>Usuario</th><th>Tipo</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+          <tbody>
+            {% for row in key_redemptions %}
+            <tr>
+              <td><strong>{{ row.key }}</strong></td>
+              <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.user_id) }}">{{ row.user_id }}</a></td>
+              <td>{{ row.tipo }}</td>
+              <td>{{ row.cantidad }}</td>
+              <td>{{ row.fecha_canje or '—' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not key_redemptions %}
+            <tr><td colspan="5">No hay canjes registrados.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'categorias' or active_section == 'comandos' %}
+      <div class="section-grid" {% if active_section == 'comandos' or active_section in ['buy', 'ajustes'] %}style="grid-template-columns:1fr;"{% endif %}>
+      <div class="stack {% if active_section == 'comandos' %}command-tools{% endif %}" id="sec-categorias">
+        {% if active_section == 'categorias' %}
+        <div class="card">
+          <h2>Nueva Categoría</h2>
+          <form method="post" action="{{ url_for('admin_save_category') }}">
+            <label>Slug</label>
+            <input name="slug" placeholder="reniec-premium" required>
+            <label>Nombre</label>
+            <input name="name" placeholder="RENIEC PREMIUM" required>
+            <label>Emoji</label>
+            <input name="icon" placeholder="🔎">
+            <label>Descripción</label>
+            <textarea name="description" placeholder="Descripción interna"></textarea>
+            <div class="inline">
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+              <div>
+                <label>Estado</label>
+                <select name="is_active">
+                  <option value="1">Activa</option>
+                  <option value="0">Inactiva</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit">Guardar categoría</button>
+          </form>
+        </div>
+        {% endif %}
+        {% if active_section == 'comandos' %}
+          <div class="card">
+            <h2>Nuevo Comando</h2>
+            <form method="post" action="{{ url_for('admin_save_command') }}">
+            <label>Slug</label>
+            <input name="slug" placeholder="dni" required>
+            <label>Nombre visible</label>
+            <input name="name" placeholder="DNI" required>
+            <label>Categoría</label>
+            <select name="category_id">
+              <option value="">Sin categoría</option>
+              {% for cat in categories %}
+              <option value="{{ cat.id }}">{{ cat.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="inline">
+              <div>
+                <label>Costo</label>
+                <input name="cost" type="number" min="0" value="1" required>
+              </div>
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+            </div>
+            <label>Plan mínimo</label>
+            <select name="required_plan">
+              <option value="FREE">Libre / todos</option>
+              <option value="BASICO">Básico</option>
+              <option value="STANDARD">Standard</option>
+              <option value="PREMIUM">Premium</option>
+            </select>
+            <div class="inline">
+              <div>
+                <label>Estado</label>
+                <select name="is_active">
+                  <option value="1">Activo</option>
+                  <option value="0">Inactivo</option>
+                </select>
+              </div>
+              <div>
+                <label>Uso</label>
+                <input name="usage_hint" placeholder="/dni 12345678">
+              </div>
+            </div>
+            <label>INFO visible en /cmds</label>
+            <textarea name="description" placeholder="Texto que saldrá en INFO dentro del menú"></textarea>
+            <label>Validación de entrada</label>
+            <div class="inline">
+              <select name="validation_type">
+                <option value="none">Sin validación</option>
+                <option value="dni">DNI: 8 dígitos</option>
+                <option value="digits">Solo números</option>
+                <option value="letters">Solo letras</option>
+                <option value="regex">Regex personalizada</option>
+                <option value="photo">Foto/archivo requerido</option>
+                <option value="photo_text">Foto/archivo + texto</option>
+              </select>
+              <input name="validation_length" placeholder="Longitud exacta, ej. 8">
+            </div>
+            <div class="inline">
+              <input name="validation_min_length" placeholder="Mínimo caracteres">
+              <input name="validation_max_length" placeholder="Máximo caracteres">
+            </div>
+            <input name="validation_regex" placeholder="Regex opcional, ej. \\d{8}">
+            <input name="validation_empty_message" placeholder="Mensaje si lo manda vacío">
+            <input name="validation_invalid_message" placeholder="Mensaje si el formato está mal">
+            <button class="secondary" type="submit">Guardar comando</button>
+            </form>
+            <p class="small">Los comandos creados aquí usan solicitud manual del bot. La validación evita cobrar o abrir solicitud cuando faltan datos o tienen mal formato.</p>
+          </div>
+          <div class="card">
+            <h2>Importación Masiva</h2>
+            <form method="post" action="{{ url_for('admin_import_commands') }}">
+              <label>Categoría para todo el bloque</label>
+              <select name="bulk_category_id">
+                <option value="">Sin categoría</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}">{{ cat.name }}</option>
+                {% endfor %}
+              </select>
+              <label>Pega una línea por comando</label>
+              <textarea name="bulk_commands" placeholder="minsa;;Descanso MINSA;;25;;/minsa DNI|CONTINGENCIA|DIAS;;Solicitud manual de descanso&#10;fotoid;;Foto ID;;10;;/fotoid + foto;;Solicitud con foto;;1;;20;;photo&#10;rucvip;;RUC VIP;;8;;/rucvip 20123456789;;Consulta RUC;;1;;30;;digits;;11;;;;;STANDARD"></textarea>
+              <p class="small">Formato recomendado: <code>slug;;nombre;;costo;;usage_hint;;info</code></p>
+              <p class="small">Si repites un <code>slug</code>, no lo duplica: lo actualiza con la nueva categoría, costo, uso e info.</p>
+              <p class="small">Opcional: agrega <code>;;estado;;orden;;validación;;longitud;;regex;;msg vacío;;msg inválido;;plan mínimo</code>. Planes: <code>FREE</code>, <code>BASICO</code>, <code>STANDARD</code>, <code>PREMIUM</code>.</p>
+              <button type="submit">Importar bloque</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      <div class="stack" id="sec-comandos">
+        {% if active_section == 'categorias' %}
+        <div class="card">
+          <h2>Categorías</h2>
+          <table>
+            <thead><tr><th>Slug</th><th>Emoji</th><th>Nombre</th><th>Orden</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody>
+              {% for cat in categories %}
+              <tr>
+                <td><strong>{{ cat.slug }}</strong><div class="small">{{ cat.description or '—' }}</div></td>
+                <td style="font-size:22px;">{{ cat.icon or '🧩' }}</td>
+                <td>{{ cat.name }}</td>
+                <td>{{ cat.sort_order }}</td>
+                <td>{% if cat.is_active %}<span class="badge ok">Activa</span>{% else %}<span class="badge off">Inactiva</span>{% endif %}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Editar</summary>
+                    <form method="post" action="{{ url_for('admin_save_category') }}">
+                      <input type="hidden" name="original_slug" value="{{ cat.slug }}">
+                      <div class="inline">
+                        <input name="slug" value="{{ cat.slug }}" required>
+                        <input name="icon" value="{{ cat.icon or '' }}" placeholder="Emoji">
+                      </div>
+                      <input name="name" value="{{ cat.name }}" required>
+                      <textarea name="description" placeholder="Descripción interna">{{ cat.description or '' }}</textarea>
+                      <div class="inline">
+                        <input name="sort_order" type="number" value="{{ cat.sort_order }}">
+                        <select name="is_active">
+                          <option value="1" {% if cat.is_active %}selected{% endif %}>Activa</option>
+                          <option value="0" {% if not cat.is_active %}selected{% endif %}>Inactiva</option>
+                        </select>
+                      </div>
+                      <button type="submit">Guardar</button>
+                    </form>
+                    <form method="post" action="{{ url_for('admin_delete_category') }}" data-confirm="¿Eliminar la categoría {{ cat.name }}? Los comandos quedarán sin categoría.">
+                      <input type="hidden" name="slug" value="{{ cat.slug }}">
+                      <button class="danger" type="submit">Eliminar categoría</button>
+                    </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+        {% if active_section == 'comandos' %}
+        <div class="card">
+          <h2>Comandos</h2>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+            <input type="hidden" name="section" value="comandos">
+            <input name="q" value="{{ q }}" placeholder="Buscar por slug, nombre, uso o info">
+            <select name="category">
+              <option value="">Todas las categorías</option>
+              {% for cat in categories %}
+              <option value="{{ cat.slug }}" {% if category_filter == cat.slug %}selected{% endif %}>{{ cat.name }}</option>
+              {% endfor %}
+            </select>
+            <select name="status">
+              <option value="">Todos los estados</option>
+              <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Activos</option>
+              <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactivos</option>
+            </select>
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="pager">
+            <div class="small">Mostrando {{ filtered_commands|length }} de {{ cmd_total }} resultados. Página {{ cmd_page }}/{{ cmd_total_pages }}</div>
+            <div>
+              {% if cmd_page > 1 %}
+              <a href="{{ url_for('admin_panel', section='comandos', q=q, category=category_filter, status=status_filter, page=cmd_page-1) }}">Anterior</a>
+              {% endif %}
+              {% if cmd_page < cmd_total_pages %}
+              <a href="{{ url_for('admin_panel', section='comandos', q=q, category=category_filter, status=status_filter, page=cmd_page+1) }}" style="margin-left:12px;">Siguiente</a>
+              {% endif %}
+            </div>
+          </div>
+          <div class="table-scroll">
+          <table class="commands-table">
+            <thead><tr><th>Comando</th><th>Categoría</th><th>Plan</th><th>Validación</th><th>Costo</th><th>Estado</th><th>Editar</th></tr></thead>
+            <tbody>
+              {% for cmd in filtered_commands %}
+              <tr>
+                <td>
+                  <strong>/{{ cmd.slug }}</strong> · {{ cmd.name }}
+                  <div class="small">{{ cmd.description or cmd.usage_hint or '—' }}</div>
+                </td>
+                <td>{{ cmd.category_name or 'Sin categoría' }}</td>
+                <td><span class="pill">{{ cmd.required_plan_label or 'Libre' }}</span></td>
+                <td><span class="pill">{{ cmd.validation_label or 'Sin validación' }}</span></td>
+                <td>{{ cmd.cost }}</td>
+                <td>{% if cmd.is_active %}<span class="badge ok">Activo</span>{% else %}<span class="badge off">Inactivo</span>{% endif %}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Editar</summary>
+                  <form method="post" action="{{ url_for('admin_save_command') }}">
+                    <input type="hidden" name="slug" value="{{ cmd.slug }}">
+                    <div class="inline">
+                      <input name="name" value="{{ cmd.name }}" required>
+                      <input name="cost" type="number" min="0" value="{{ cmd.cost }}" required>
+                    </div>
+                    <div class="inline">
+                      <select name="category_id">
+                        <option value="">Sin categoría</option>
+                        {% for cat in categories %}
+                        <option value="{{ cat.id }}" {% if cmd.category_id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+                        {% endfor %}
+                      </select>
+                      <select name="is_active">
+                        <option value="1" {% if cmd.is_active %}selected{% endif %}>Activo</option>
+                        <option value="0" {% if not cmd.is_active %}selected{% endif %}>Inactivo</option>
+                      </select>
+                    </div>
+                    <div class="inline">
+                      <input name="sort_order" type="number" value="{{ cmd.sort_order }}">
+                      <input name="usage_hint" value="{{ cmd.usage_hint or '' }}" placeholder="/cmd arg">
+                    </div>
+                    <label>Plan mínimo</label>
+                    <select name="required_plan">
+                      <option value="FREE" {% if cmd.required_plan == 'FREE' %}selected{% endif %}>Libre / todos</option>
+                      <option value="BASICO" {% if cmd.required_plan == 'BASICO' %}selected{% endif %}>Básico</option>
+                      <option value="STANDARD" {% if cmd.required_plan == 'STANDARD' %}selected{% endif %}>Standard</option>
+                      <option value="PREMIUM" {% if cmd.required_plan == 'PREMIUM' %}selected{% endif %}>Premium</option>
+                    </select>
+                    <label>INFO</label>
+                    <textarea name="description" placeholder="Texto mostrado en /cmds">{{ cmd.description or '' }}</textarea>
+                    <label>Validación</label>
+                    <div class="inline">
+                      <select name="validation_type">
+                        <option value="none" {% if cmd.validation_type == 'none' %}selected{% endif %}>Sin validación</option>
+                        <option value="dni" {% if cmd.validation_type == 'dni' %}selected{% endif %}>DNI: 8 dígitos</option>
+                        <option value="digits" {% if cmd.validation_type in ['digits', 'number'] %}selected{% endif %}>Solo números</option>
+                        <option value="letters" {% if cmd.validation_type == 'letters' %}selected{% endif %}>Solo letras</option>
+                        <option value="regex" {% if cmd.validation_type == 'regex' %}selected{% endif %}>Regex personalizada</option>
+                        <option value="photo" {% if cmd.validation_type in ['photo', 'media'] %}selected{% endif %}>Foto/archivo requerido</option>
+                        <option value="photo_text" {% if cmd.validation_type in ['photo_text', 'media_text'] %}selected{% endif %}>Foto/archivo + texto</option>
+                      </select>
+                      <input name="validation_length" value="{{ cmd.validation_length or '' }}" placeholder="Longitud exacta">
+                    </div>
+                    <div class="inline">
+                      <input name="validation_min_length" value="{{ cmd.validation_min_length or '' }}" placeholder="Mínimo">
+                      <input name="validation_max_length" value="{{ cmd.validation_max_length or '' }}" placeholder="Máximo">
+                    </div>
+                    <input name="validation_regex" value="{{ cmd.validation_regex or '' }}" placeholder="Regex opcional">
+                    <input name="validation_empty_message" value="{{ cmd.validation_empty_message or '' }}" placeholder="Mensaje si está vacío">
+                    <input name="validation_invalid_message" value="{{ cmd.validation_invalid_message or '' }}" placeholder="Mensaje si está mal">
+                    <button type="submit">Guardar</button>
+                  </form>
+                  <form method="post" action="{{ url_for('admin_duplicate_command') }}" class="stack" style="margin-top:10px;" data-confirm="¿Duplicar /{{ cmd.slug }} con el nuevo slug indicado?">
+                    <input type="hidden" name="source_slug" value="{{ cmd.slug }}">
+                    <div class="inline">
+                      <input name="new_slug" placeholder="nuevo_slug" required>
+                      <input name="new_name" placeholder="Nombre visible opcional">
+                    </div>
+                    <button class="secondary" type="submit">Duplicar comando</button>
+                  </form>
+                  <form method="post" action="{{ url_for('admin_delete_command') }}" data-confirm="¿Eliminar /{{ cmd.slug }} del catálogo?">
+                    <input type="hidden" name="slug" value="{{ cmd.slug }}">
+                    <button class="danger" type="submit">Eliminar comando</button>
+                  </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not filtered_commands %}
+              <tr><td colspan="7">No hay comandos que coincidan con el filtro actual.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      </div>
+      {% endif %}
+      {% if active_section == 'buy' or active_section == 'ajustes' %}
+      <div class="section-grid">
+        {% if active_section == 'buy' %}
+        <div class="card" id="sec-buy">
+          <h2>Paquetes de /buy</h2>
+          <form method="post" action="{{ url_for('admin_save_buy_package') }}">
+            <div class="inline">
+              <div>
+                <label>Tipo</label>
+                <select name="kind">
+                  <option value="credits">Créditos</option>
+                  <option value="days">Días</option>
+                </select>
+              </div>
+              <div>
+                <label>Grupo</label>
+                <input name="group_slug" placeholder="premium">
+              </div>
+            </div>
+            <div class="inline">
+              <div>
+                <label>Badge</label>
+                <input name="badge" placeholder="💎">
+              </div>
+              <div>
+                <label>Título</label>
+                <input name="title" placeholder="PREMIUM">
+              </div>
+            </div>
+            <div class="inline">
+              <div>
+                <label>Subtítulo</label>
+                <input name="subtitle" placeholder="5's">
+              </div>
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+            </div>
+            <label>Línea</label>
+            <input name="line_text" placeholder="1500 + 200 Creditos ➩ 100 Soles">
+            <label>Estado</label>
+            <select name="is_active">
+              <option value="1">Activo</option>
+              <option value="0">Inactivo</option>
+            </select>
+            <button class="secondary" type="submit">Agregar paquete</button>
+          </form>
+          <table>
+            <thead><tr><th>Tipo</th><th>Grupo</th><th>Línea</th><th>Estado</th><th>Editar</th></tr></thead>
+            <tbody>
+              {% for pkg in buy_packages %}
+              <tr>
+                <td>{{ 'Créditos' if pkg.kind == 'credits' else 'Días' }}</td>
+                <td><strong>{{ pkg.badge }} {{ pkg.title }}</strong><div class="small">{{ pkg.subtitle or '—' }}</div></td>
+                <td>{{ pkg.line_text }}</td>
+                <td>{% if pkg.is_active %}<span class="badge ok">Activo</span>{% else %}<span class="badge off">Inactivo</span>{% endif %}</td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_save_buy_package') }}">
+                    <input type="hidden" name="id" value="{{ pkg.id }}">
+                    <div class="inline">
+                      <select name="kind">
+                        <option value="credits" {% if pkg.kind == 'credits' %}selected{% endif %}>Créditos</option>
+                        <option value="days" {% if pkg.kind == 'days' %}selected{% endif %}>Días</option>
+                      </select>
+                      <input name="group_slug" value="{{ pkg.group_slug }}">
+                    </div>
+                    <div class="inline">
+                      <input name="badge" value="{{ pkg.badge }}">
+                      <input name="title" value="{{ pkg.title }}">
+                    </div>
+                    <div class="inline">
+                      <input name="subtitle" value="{{ pkg.subtitle or '' }}">
+                      <input name="sort_order" type="number" value="{{ pkg.sort_order }}">
+                    </div>
+                    <input name="line_text" value="{{ pkg.line_text }}">
+                    <select name="is_active">
+                      <option value="1" {% if pkg.is_active %}selected{% endif %}>Activo</option>
+                      <option value="0" {% if not pkg.is_active %}selected{% endif %}>Inactivo</option>
+                    </select>
+                    <button type="submit">Guardar</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+        {% if active_section == 'ajustes' %}
+        <div class="card" id="sec-ajustes">
+          <h2>Ajustes Visuales y Botones</h2>
+          <p class="small">Controla desde aquí imágenes y enlaces que usan `/start`, `/buy`, `/cmds`, `/admin` y otras pantallas.</p>
+          <div class="three">
+            {% for key in ['BOT_NAME','BT_OWNER','OWNER_LINK','BT_CANAL','CANAL_LINK','BT_GRUPO','GRUPO_LINK','BT_SELLER','SELLER_LINK','BT_SELLER1','SELLER_LINK1','BT_SELLER2','SELLER_LINK2','BT_SELLER3','SELLER_LINK3','FT_BUY','FT_CMDS','FT_CMDSADMIN','FT_START'] %}
+            <div class="mini-card">
+              <form method="post" action="{{ url_for('admin_save_setting') }}">
+                <input type="hidden" name="key" value="{{ key }}">
+                <label>{{ key }}</label>
+                <input name="value" value="{{ settings.get(key, '') }}" placeholder="{{ key }}">
+                <button type="submit">Guardar</button>
+              </form>
+              {% if key in ['FT_BUY','FT_CMDS','FT_CMDSADMIN','FT_START'] %}
+              <form method="post" action="{{ url_for('admin_upload_visual_setting') }}" enctype="multipart/form-data" style="margin-top:10px;">
+                <input type="hidden" name="key" value="{{ key }}">
+                <label>Subir imagen directa</label>
+                <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" required>
+                <button type="submit" class="secondary">Subir y usar</button>
+              </form>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        </div>
+        {% endif %}
+        {% if active_section == 'herramientas' %}
+        <div class="section-grid">
+          <div class="card">
+            <h2>Respaldo</h2>
+            <p class="small">Exporta catálogo, descarga DB completas o restaura un ZIP de NEXORA ONE.</p>
+            {% if latest_backup %}
+            <div class="mini-card" style="margin-bottom:12px;">
+              <strong>Último backup:</strong> {{ latest_backup.name }}
+              <div class="small">{{ latest_backup.created_at }} · {{ latest_backup.size_label }}</div>
+            </div>
+            {% else %}
+            <p class="small">Aún no hay backups automáticos guardados.</p>
+            {% endif %}
+            <div class="stack" style="margin-bottom:14px;">
+              <a class="side-link" href="{{ url_for('admin_db_backup_zip') }}">Descargar backup completo</a>
+              <a class="side-link" href="{{ url_for('admin_export_panel') }}">Descargar catálogo JSON</a>
+            </div>
+            <form method="post" action="{{ url_for('admin_create_daily_backup') }}" style="margin-bottom:14px;">
+              <button type="submit">Crear backup ahora</button>
+            </form>
+            <form method="post" action="{{ url_for('admin_import_panel') }}" enctype="multipart/form-data" data-confirm="¿Importar este respaldo? Se recomienda tener backup antes.">
+              <label>Importar archivo JSON</label>
+              <input type="file" name="backup_file" accept=".json,application/json" required>
+              <button type="submit">Importar respaldo</button>
+            </form>
+            <form method="post" action="{{ url_for('admin_restore_db_backup') }}" enctype="multipart/form-data" data-confirm="¿Restaurar este ZIP? Se creará una copia previa, pero el panel cambiará sus bases de datos.">
+              <label>Restaurar backup completo ZIP</label>
+              <input type="file" name="backup_zip" accept=".zip,application/zip" required>
+              <input name="confirm" placeholder="Escribe RESTAURAR">
+              <button class="danger" type="submit">Restaurar backup</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Acciones Masivas</h2>
+            <form method="post" action="{{ url_for('admin_bulk_commands') }}" data-confirm="¿Aplicar esta acción masiva a los comandos filtrados?">
+              <label>Categoría</label>
+              <select name="category_slug">
+                <option value="">Todas</option>
+                {% for cat in categories %}
+                <option value="{{ cat.slug }}">{{ cat.name }}</option>
+                {% endfor %}
+              </select>
+              <label>Estado actual</label>
+              <select name="current_status">
+                <option value="">Todos</option>
+                <option value="active">Solo activos</option>
+                <option value="inactive">Solo inactivos</option>
+              </select>
+              <label>Acción de estado</label>
+              <select name="status_action">
+                <option value="">No cambiar estado</option>
+                <option value="activate">Activar</option>
+                <option value="deactivate">Desactivar</option>
+              </select>
+              <label>Operación de costo</label>
+              <select name="cost_action">
+                <option value="">No cambiar costo</option>
+                <option value="sum">Sumar</option>
+                <option value="set">Igualar</option>
+              </select>
+              <label>Valor</label>
+              <input name="cost_value" type="number" value="0">
+              <button type="submit">Aplicar acción masiva</button>
+            </form>
+          </div>
+        </div>
+        {% endif %}
+        {% if active_section == 'sistema' %}
+        <div class="section-grid">
+          <div class="card">
+            <h2>Estado del bot</h2>
+            <div class="summary" style="margin-bottom:14px;">
+              <div class="metric"><span class="pill">Web</span><h3>{% if health_summary.runtime.web_online %}Online{% else %}Off{% endif %}</h3><div class="small">API Flask</div></div>
+              <div class="metric"><span class="pill">Worker</span><h3>{% if health_summary.runtime.worker_online %}Online{% else %}Sin señal{% endif %}</h3><div class="small">{{ health_summary.runtime.last_worker_seen or 'sin heartbeat' }}</div></div>
+              <div class="metric"><span class="pill">Volumen</span><h3 style="font-size:18px;">{{ health_summary.runtime.data_volume or '—' }}</h3><div class="small">Datos persistentes</div></div>
+              <div class="metric"><span class="pill">Errores</span><h3>{{ health_summary.metrics.errores.ultimos_24h }}</h3><div class="small">Últimas 24h</div></div>
+            </div>
+            <p class="small">API base actual: <code>{{ health_summary.runtime.api_base or 'NO CONFIG' }}</code></p>
+            {% if health_summary.runtime.last_polling_conflict %}
+            <div class="flash alert-card">
+              <strong>Conflicto de polling:</strong> {{ health_summary.runtime.last_polling_conflict }}. Revisa tokens duplicados o servicios viejos encendidos.
+              <form method="post" action="{{ url_for('admin_clear_polling_alert') }}" style="margin-top:10px; max-width:240px;">
+                <button class="secondary" type="submit">Limpiar alerta vieja</button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+          <div class="card">
+            <h2>Estado de almacenamiento</h2>
+            <p class="small">Directorio de datos: <code>{{ storage.data_dir }}</code></p>
+            <p class="small">NEXORA_DATA_DIR: <code>{{ storage.env_data_dir or '—' }}</code></p>
+            <p class="small">RAILWAY_VOLUME_MOUNT_PATH: <code>{{ storage.railway_mount or '—' }}</code></p>
+            <table>
+              <thead><tr><th>DB</th><th>Existe</th><th>Tamaño</th><th>En data dir</th></tr></thead>
+              <tbody>
+                {% for item in storage['items'] %}
+                <tr>
+                  <td><strong>{{ item.name }}</strong><div class="small">{{ item.path }}</div></td>
+                  <td>{% if item.exists %}<span class="badge ok">Sí</span>{% else %}<span class="badge off">No</span>{% endif %}</td>
+                  <td>{{ item.size }} bytes</td>
+                  <td>{% if item.in_data_dir %}<span class="badge ok">Sí</span>{% else %}<span class="badge off">No</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h2>Herramientas de sistema</h2>
+            <div class="stack">
+              <a class="side-link" href="{{ url_for('health') }}">Ver /health</a>
+              <a class="side-link" href="{{ url_for('debug_storage') }}">Ver /debug/storage</a>
+              <a class="side-link" href="{{ url_for('admin_db_backup_zip') }}">Descargar DB ZIP</a>
+              <a class="side-link" href="{{ url_for('admin_export_panel') }}">Descargar catálogo JSON</a>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Backups automáticos</h2>
+            <p class="small">Se crea un backup diario cuando el servicio recibe tráfico. Se conservan los últimos 7.</p>
+            {% if latest_backup %}
+            <p class="small">Último: <strong>{{ latest_backup.name }}</strong> · {{ latest_backup.created_at }} · {{ latest_backup.size_label }}</p>
+            {% endif %}
+            <form method="post" action="{{ url_for('admin_create_daily_backup') }}" style="margin-bottom:14px;">
+              <button type="submit">Crear backup ahora</button>
+            </form>
+            <table>
+              <thead><tr><th>Archivo</th><th>Tamaño</th><th>Fecha</th><th>Descargar</th></tr></thead>
+              <tbody>
+                {% for backup in daily_backups %}
+                <tr>
+                  <td><strong>{{ backup.name }}</strong></td>
+                  <td>{{ backup.size_label }}</td>
+                  <td>{{ backup.created_at }}</td>
+                  <td><a href="{{ url_for('admin_download_daily_backup', filename=backup.name) }}">ZIP</a></td>
+                </tr>
+                {% endfor %}
+                {% if not daily_backups %}
+                <tr><td colspan="4">Aún no hay backups automáticos.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h2>Clave del panel</h2>
+            <p class="small">La nueva clave queda guardada como hash en la DB persistente.</p>
+            <form method="post" action="{{ url_for('admin_update_panel_password') }}" data-confirm="¿Cambiar la clave del panel?">
+              <label>Clave actual</label>
+              <input name="current_password" type="password" required>
+              <label>Nueva clave</label>
+              <input name="new_password" type="password" minlength="8" required>
+              <label>Confirmar nueva clave</label>
+              <input name="confirm_password" type="password" minlength="8" required>
+              <button type="submit">Cambiar clave</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Cuentas del panel</h2>
+            <p class="small">Solo FUNDADOR puede crear o editar accesos de CO-FUNDADOR, SELLER y SOPORTE.</p>
+            <form method="post" action="{{ url_for('admin_save_panel_account') }}">
+              <div class="inline">
+                <input name="username" placeholder="usuario_panel" required>
+                <input name="password" type="password" minlength="8" placeholder="clave inicial o nueva">
+              </div>
+              <div class="inline">
+                <select name="role">
+                  {% for role in panel_roles %}
+                  <option value="{{ role }}">{{ role }}</option>
+                  {% endfor %}
+                </select>
+                <select name="is_active">
+                  <option value="1">Activo</option>
+                  <option value="0">Inactivo</option>
+                </select>
+              </div>
+              <button type="submit">Guardar cuenta</button>
+            </form>
+            <table style="margin-top:14px;">
+              <thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Editar</th></tr></thead>
+              <tbody>
+                {% for account in panel_accounts %}
+                <tr>
+                  <td><strong>{{ account.username }}</strong><div class="small">{{ account.updated_at or account.created_at or '—' }}</div></td>
+                  <td>{{ account.role }}</td>
+                  <td>{% if account.is_active %}<span class="badge ok">Activo</span>{% else %}<span class="badge off">Inactivo</span>{% endif %}</td>
+                  <td>
+                    <form method="post" action="{{ url_for('admin_save_panel_account') }}">
+                      <input type="hidden" name="username" value="{{ account.username }}">
+                      <div class="inline">
+                        <select name="role">
+                          {% for role in panel_roles %}
+                          <option value="{{ role }}" {% if account.role == role %}selected{% endif %}>{{ role }}</option>
+                          {% endfor %}
+                        </select>
+                        <select name="is_active">
+                          <option value="1" {% if account.is_active %}selected{% endif %}>Activo</option>
+                          <option value="0" {% if not account.is_active %}selected{% endif %}>Inactivo</option>
+                        </select>
+                      </div>
+                      <input name="password" type="password" minlength="8" placeholder="Nueva clave opcional">
+                      <button type="submit">Actualizar</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+                {% if not panel_accounts %}
+                <tr><td colspan="4">Aún no hay cuentas extra.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h2>Limpieza de historial</h2>
+            <p class="small">Antes de borrar se crea una copia de historial.db en el directorio de datos.</p>
+            <table>
+              <thead><tr><th>Más antiguo que</th><th>Fecha corte</th><th>Registros</th></tr></thead>
+              <tbody>
+                {% for item in history_cleanup_preview %}
+                <tr><td>{{ item.days }} días</td><td>{{ item.cutoff }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            <form method="post" action="{{ url_for('admin_cleanup_history') }}" style="margin-top:14px;" data-confirm="¿Limpiar historial antiguo? Esta acción no se puede deshacer sin restaurar backup.">
+              <label>Eliminar historial más antiguo que</label>
+              <select name="days">
+                <option value="90">90 días</option>
+                <option value="180">180 días</option>
+                <option value="60">60 días</option>
+                <option value="30">30 días</option>
+              </select>
+              <label>Confirmación</label>
+              <input name="confirm" placeholder="Escribe LIMPIAR">
+              <button class="danger" type="submit">Limpiar historial antiguo</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Errores recientes</h2>
+            <div class="summary" style="margin-bottom:14px;">
+              <div class="metric"><span class="pill">Logs</span><h3>{{ error_logs|length }}</h3><div class="small">Últimos registrados</div></div>
+              <div class="metric"><span class="pill">Última ruta</span><h3 style="font-size:18px;">{{ error_logs[0].path if error_logs else 'OK' }}</h3><div class="small">{{ error_logs[0].created_at if error_logs else 'Sin errores' }}</div></div>
+              <div class="metric"><span class="pill">Método</span><h3>{{ error_logs[0].method if error_logs else '—' }}</h3><div class="small">Del último error</div></div>
+              <div class="metric"><span class="pill">Estado</span><h3>{{ 'Revisar' if error_logs else 'OK' }}</h3><div class="small">Panel de salud</div></div>
+            </div>
+            <table>
+              <thead><tr><th>ID</th><th>Ruta</th><th>Error</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for err in error_logs %}
+                <tr>
+                  <td>#{{ err.id }}</td>
+                  <td><strong>{{ err.method }}</strong> {{ err.path }}</td>
+                  <td>{{ err.message }}<details><summary class="small">Traceback</summary><pre class="small">{{ err.traceback }}</pre></details></td>
+                  <td>{{ err.created_at or '—' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not error_logs %}
+                <tr><td colspan="4">Sin errores registrados.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h2>Auditoría del panel</h2>
+            <form method="get" action="{{ url_for('admin_panel') }}" class="inline" style="margin-bottom:14px;">
+              <input type="hidden" name="section" value="sistema">
+              <input name="audit_action" value="{{ audit_action }}" placeholder="acción">
+              <input name="audit_actor" value="{{ audit_actor }}" placeholder="actor">
+              <input name="audit_target" value="{{ audit_target }}" placeholder="objetivo">
+              <button type="submit">Filtrar</button>
+              <a href="{{ url_for('admin_panel', section='sistema') }}">Limpiar</a>
+            </form>
+            <table>
+              <thead><tr><th>ID</th><th>Acción</th><th>Objetivo</th><th>Detalle</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in audit_logs %}
+                <tr>
+                  <td>#{{ row.id }}</td>
+                  <td><strong>{{ row.action }}</strong><div class="small">{{ row.actor }} · {{ row.ip }}</div></td>
+                  <td>{{ row.target or '—' }}</td>
+                  <td>{{ row.details or '—' }}</td>
+                  <td>{{ row.created_at or '—' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not audit_logs %}
+                <tr><td colspan="5">Sin cambios auditados todavía.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+        {% if active_section == 'estadisticas' %}
+        <div class="card">
+          <h2>Dashboard</h2>
+          <div class="summary">
+            <div class="metric"><span class="pill">Usuarios</span><h3>{{ dashboard.usuarios }}</h3><div class="small">Registrados</div></div>
+            <div class="metric"><span class="pill">Consultas</span><h3>{{ dashboard.consultas }}</h3><div class="small">Historial total</div></div>
+            <div class="metric"><span class="pill">Pendientes</span><h3>{{ dashboard.pendientes }}</h3><div class="small">Solicitudes sin resolver</div></div>
+            <div class="metric"><span class="pill">Ventas</span><h3>{{ dashboard.ventas }}</h3><div class="small">Registros en compras</div></div>
+          </div>
+          <div class="sales-strip" style="margin-top:14px;">
+            <div class="sales-card"><span class="pill">Ventas hoy</span><h3>{{ dashboard.periods.today.ventas }}</h3><div class="small">Consultas {{ dashboard.periods.today.consultas }} · Solicitudes {{ dashboard.periods.today.solicitudes }}</div></div>
+            <div class="sales-card"><span class="pill">Últimos 7 días</span><h3>{{ dashboard.periods.last_7.ventas }}</h3><div class="small">Actividad comercial semanal</div></div>
+            <div class="sales-card"><span class="pill">Últimos 30 días</span><h3>{{ dashboard.periods.last_30.ventas }}</h3><div class="small">Base para medir crecimiento</div></div>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Actividad por periodo</h3>
+            <table>
+              <thead><tr><th>Periodo</th><th>Consultas</th><th>Ventas</th><th>Solicitudes</th></tr></thead>
+              <tbody>
+                {% for period in dashboard.periods.values() %}
+                <tr>
+                  <td><strong>{{ period.label }}</strong></td>
+                  <td>{{ period.consultas }}</td>
+                  <td>{{ period.ventas }}</td>
+                  <td>{{ period.solicitudes }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Ventas por tipo</h3>
+            <table>
+              <thead><tr><th>Tipo</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.ventas_por_tipo %}
+                <tr><td>{{ item.tipo }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.ventas_por_tipo %}
+                <tr><td colspan="2">Sin ventas aún.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Ventas por periodo</h3>
+            <table>
+              <thead><tr><th>Periodo</th><th>Total</th><th>Créditos</th><th>Días</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.ventas_por_periodo %}
+                <tr><td>{{ item.label }}</td><td>{{ item.total }}</td><td>{{ item.creditos }}</td><td>{{ item.dias }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.ventas_por_periodo %}
+                <tr><td colspan="4">Sin ventas aún.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Top comandos</h3>
+            <table>
+              <thead><tr><th>Comando</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.top_comandos %}
+                <tr><td>{{ item.consulta }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.top_comandos %}
+                <tr><td colspan="2">Sin datos aún.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Usuarios con más consultas</h3>
+            <table>
+              <thead><tr><th>ID usuario</th><th>Consultas</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.top_usuarios %}
+                <tr><td><a href="{{ url_for('admin_panel', section='usuario', uid=item.id_tg) }}">{{ item.id_tg }}</a></td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.top_usuarios %}
+                <tr><td colspan="2">Sin datos aún.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Vendedores con más ventas</h3>
+            <table>
+              <thead><tr><th>Vendedor</th><th>Ventas</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.top_vendedores %}
+                <tr><td>{{ item.vendedor }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.top_vendedores %}
+                <tr><td colspan="2">Sin ventas aún.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Consultas por día</h3>
+            <table>
+              <thead><tr><th>Día</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.consultas_por_dia %}
+                <tr><td>{{ item.dia }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.consultas_por_dia %}
+                <tr><td colspan="2">Sin consultas recientes.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Ventas por día</h3>
+            <table>
+              <thead><tr><th>Día</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.ventas_por_dia %}
+                <tr><td>{{ item.dia }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.ventas_por_dia %}
+                <tr><td colspan="2">Sin ventas recientes.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="section-grid">
+          <div class="card">
+            <h3>Usuarios por plan</h3>
+            <table>
+              <thead><tr><th>Plan</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.usuarios_por_plan %}
+                <tr><td>{{ item.plan }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.usuarios_por_plan %}
+                <tr><td colspan="2">Sin usuarios.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Estados</h3>
+            <table>
+              <thead><tr><th>Tipo</th><th>Total</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.usuarios_por_estado %}
+                <tr><td>Usuario: {{ item.estado }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% for item in dashboard.solicitudes_por_estado %}
+                <tr><td>Solicitud: {{ item.status }}</td><td>{{ item.total }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.usuarios_por_estado and not dashboard.solicitudes_por_estado %}
+                <tr><td colspan="2">Sin estados registrados.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</body>
+<script>
+    const csrfToken = "{{ csrf_token() }}";
+    document.querySelectorAll('form[method="post"], form[method="POST"]').forEach((form) => {
+      if (!form.querySelector('input[name="csrf_token"]')) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'csrf_token';
+        input.value = csrfToken;
+        form.appendChild(input);
+      }
+    });
+    const storedTheme = localStorage.getItem('nexora-panel-theme') || localStorage.getItem('spidersyn-panel-theme');
+    if (storedTheme === 'dark') document.body.classList.add('dark');
+  function toggleTheme() {
+      document.body.classList.toggle('dark');
+      localStorage.setItem('nexora-panel-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
+    }
+  </script>
+  <script src="{{ url_for('static', filename='panel-safety.js') }}" defer></script>
+</html>
