@@ -1,85 +1,79 @@
-# NEXORA ONE — montaje de bot y web
+# Operación en Northflank
 
-> CONFIGURACIÓN TURSO:
-> NO crear volúmenes de pago. Bot y web deben configurar `DATABASE_BACKEND=turso`,
-> la misma `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` como secretos de ejecución.
-> Conservar `BOT_TOKEN` nuevo y la misma `NEXORA_INTERNAL_API_KEY` en ambos.
-> La web requiere `NEXORA_PANEL_SECRET` estable además de usuario y contraseña.
-> La base remota nueva ya se inicializó; no importar bases antiguas ni borrar datos.
-> Los `.db` locales NO son la fuente de datos al usar Turso. Imágenes nuevas del
-> panel se guardan en la base (máximo 512 KB). Créditos y soles siguen separados.
-> Respaldos unificados se exportan a SQLite y envían al canal privado del dueño.
-> Restaurar requiere mantenimiento con ambos servicios pausados; los botones de
-> restauración de archivos locales quedan bloqueados para evitar un éxito falso.
-> No desplegar hasta que `scripts/test_turso_live.py --write-test` termine bien.
-> Una escritura concurrente puede ser rechazada por SQLITE_BUSY; no reintentar
-> cobros ambiguos sin comprobar el estado.
+## Arquitectura en producción
 
-## Actualizaciones del despliegue existente
+El despliegue existente tiene dos servicios conectados al mismo repositorio y rama `main`:
 
-Bot y web ya están creados. No recrear servicios ni inicializar o vaciar la base
-para una actualización. Conservar sus variables de entorno.
+| Servicio | Dockerfile | Función | Red |
+| --- | --- | --- | --- |
+| `nexoraone` | `/Dockerfile` | Bot de Telegram con long polling | Sin puerto público; una instancia |
+| `nexoraoneweb` | `/Dockerfile.web` | Panel, API y healthcheck | Puerto HTTP `8080`; endpoint `/health` |
 
-1. Ejecutar las pruebas con `DATABASE_BACKEND=sqlite` para aislarlas de producción.
-2. Ejecutar `python scripts/check_deployment.py` (comprobación de solo lectura).
-3. Subir el commit y comprobar que ambos servicios construyan y desplieguen ese
-   commit; si CI/CD está desactivado, iniciar Build y después Deploy manualmente.
-4. Mantener una sola instancia del bot. Comprobar `/status`, una descarga real y
-   la entrega de una respuesta como mensaje nuevo en Telegram.
-5. Revisar los logs. Un HTTP 200 de la web no confirma la versión del bot.
+Ambos servicios usan la misma base Turso. El bot envía un heartbeat cada minuto al endpoint interno de la web. Para confirmar conexión, consulta `/health`: `web_online` y `worker_online` deben ser `true`, y `data_volume` debe indicar `Turso (remoto)`.
 
-Revisar los recursos, límites y coste mostrados por Northflank antes de crear servicios o volúmenes. Este proyecto usa dos servicios del mismo repositorio y un solo receptor de Telegram.
+## Variables y secretos
 
-## Web (servicio separado)
+Configura los secretos desde la página **Environment** de cada servicio. No los pegues en chats ni los guardes en Git.
 
-- Contexto `/`, Dockerfile `/Dockerfile.web`, una instancia, puerto HTTP público `8080`.
-- Sin volumen. `NEXORA_DATA_DIR=/data` solo almacena archivos temporales.
-- `NEXORA_ADMIN_ID=7454664711`, `NEXORA_BOT_NAME=NEXORA ONE`, `NEXORA_PANEL_PUBLIC=true`.
-- Secretos: `BOT_TOKEN`, `NEXORA_INTERNAL_API_KEY`, `NEXORA_PANEL_USER`, `NEXORA_PANEL_PASSWORD`, `NEXORA_PANEL_SECRET`.
-- Health check: `/health` en puerto `8080`.
-- Las bases de servicios se crean nuevas. No importar el ZIP antiguo.
+### En ambos servicios
 
-## Conexión entre servicios
+- `DATABASE_BACKEND=turso`
+- `TURSO_DATABASE_URL`: URL de la misma base Turso
+- `TURSO_AUTH_TOKEN`: token de acceso de esa base
+- `NEXORA_INTERNAL_API_KEY`: misma clave aleatoria en web y bot
+- `NEXORA_ADMIN_ID=7454664711`
+- `NEXORA_BOT_NAME=NEXORA ONE`
+- `BOT_TOKEN`: token actual de `@NexoraOneRoBot`
 
-En el bot configurar `NEXORA_API_BASE` con la URL HTTPS de la web y la misma
-`NEXORA_INTERNAL_API_KEY`. Usar `NEXORA_ADMIN_ID=7454664711`.
-Ambos servicios deben apuntar a la MISMA base Turso ya inicializada.
+### Solo en el bot `nexoraone`
 
-El token debe corresponder a **@NexoraOneRoBot**. Si es un bot nuevo, añadirlo
-como administrador a grupos y al canal privado de respaldos.
-Dueño: **@PeruDoxer (7454664711)**. Cuenta oficial de contacto:
-**@OficialNexora (7151644287)**, sin permisos automáticos de dueño.
-Canal público oficial: **@NexoraOneOficial**. No sustituye al canal privado
-de respaldos `-1004334720154`.
-@NexoraOneRoBot es un bot nuevo: configurar su token nuevo como secreto en
-ambos servicios. Conservar los datos actuales antes de pausar o reemplazar
-el despliegue anterior; no eliminar el servicio ni su volumen sin respaldo.
+- `NEXORA_API_BASE`: URL HTTPS completa de `nexoraoneweb`, por ejemplo `https://<host>.code.run`
+- `BACKUP_CHAT_ID`: chat privado autorizado para recibir respaldos
+- `NEXORA_DATA_DIR`: directorio temporal local; los datos productivos se guardan en Turso
 
-## Preparación
+### Solo en la web `nexoraoneweb`
 
-1. Sube esta carpeta a un repositorio privado de GitHub. No subas `.env` ni `app/data/bot.db`.
-2. Crea una cuenta en https://northflank.com y entra con GitHub.
-3. Selecciona el proyecto y revisa el plan disponible en tu cuenta.
+- `NEXORA_PANEL_USER`
+- `NEXORA_PANEL_PASSWORD`
+- `NEXORA_PANEL_SECRET`: secreto estable para firmar sesiones; no lo cambies en cada deploy
+- `NEXORA_PANEL_PUBLIC=true` si el login del panel debe estar disponible públicamente
+- `NEXORA_DATA_DIR=/data`
 
-## Servicio
+La web también puede usar `BOT_TOKEN` para algunas integraciones de Telegram. Debe ser el token actual del mismo bot.
 
-1. Selecciona **Create service → Combined service**.
-2. Conecta el repositorio y la rama principal.
-3. En Build type selecciona **Dockerfile** y usa `/Dockerfile`.
-4. Elige los recursos adecuados y deja una sola instancia.
-5. No necesitas puerto público: Telegram funciona mediante long polling.
-6. En variables/secretos agrega:
-   - `BOT_TOKEN`: token válido entregado por BotFather.
-   - `DATABASE_BACKEND`: `turso`.
-   - `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`: los mismos que en la web.
-   - `DB_PATH`: `app/data/bot.db` (ruta de trabajo, no almacenamiento remoto).
-   - `BACKUP_CHAT_ID`: ya queda configurado por defecto como `-1004334720154`; puedes agregarlo también como secreto para dejarlo visible en la configuración.
-7. Despliega y revisa los logs. Debe aparecer `Bot iniciado correctamente...`.
+## Actualizar la aplicación
 
-## Persistencia
+1. Envía los cambios a `main` en GitHub; Northflank debe iniciar un build desde ese commit.
+2. Comprueba que el build de ambos servicios termina correctamente y que el bot sigue en una sola instancia.
+3. Revisa los logs sin copiar tokens ni claves.
+4. Consulta `/health`. La fecha `last_worker_seen` debe actualizarse y `worker_online` debe quedar en `true`.
+5. Confirma `/status` en Telegram y realiza una comprobación funcional de bajo riesgo.
 
-Los datos se escriben directamente en Turso, sin volumen. Las exportaciones
-locales son temporales y el bot las envía al canal privado. Si omites
-`DATABASE_BACKEND=turso`, se usa SQLite local y los datos NO serán persistentes.
+Un build verde confirma que la imagen se creó; no confirma por sí solo la conexión de los dos servicios o el funcionamiento de cada comando.
 
-No agregues el token directamente al repositorio. Northflank debe guardarlo como secreto de ejecución.
+## Inicializar una base Turso nueva
+
+La base de producción ya existe y está inicializada. **No ejecutes estos pasos sobre la base actual ni importes datos antiguos.** Para una base nueva y vacía:
+
+1. Configura `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` en el entorno local privado.
+2. Activa el backend remoto solo para el proceso de inicialización y ejecuta:
+
+   ```powershell
+   $env:DATABASE_BACKEND = "turso"
+   .\.venv\Scripts\python.exe scripts/init_turso.py --initialize
+   ```
+
+3. Espera los mensajes de inicialización completa. Si el proceso falla, no despliegues contra esa base hasta revisar la causa.
+4. Verifica la conexión de lectura con `python scripts/check_turso.py` y configura los mismos secretos en los dos servicios.
+
+No compartas ni incluyas en capturas el token de Turso. Al terminar, cierra la terminal o elimina la variable temporal de entorno.
+
+## Respaldo y recuperación
+
+Los respaldos unificados se exportan a SQLite y se envían al chat privado configurado. Antes de cualquier restauración, pausa bot y web para evitar escrituras concurrentes. Comprueba el respaldo fuera de producción antes de restaurar; no uses archivos SQLite locales como si fueran una copia actual de Turso.
+
+Turso puede rechazar escrituras concurrentes con `SQLITE_BUSY`. Una operación con resultado ambiguo debe verificarse antes de repetirse, especialmente si implica créditos, saldos o entregas.
+
+## Costos y operación
+
+Revisa los planes, instancias y cargos que muestra tu cuenta de Northflank antes de cambiar recursos. Mantén una instancia del bot y desactiva o elimina servicios que ya no uses desde Northflank; borrar archivos locales no detiene recursos alojados.

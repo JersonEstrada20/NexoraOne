@@ -1,7 +1,17 @@
 .venv/
 .env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+coverage.xml
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 app/data/
 nexora/data/
 nexora/config.json

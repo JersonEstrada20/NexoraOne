@@ -1,81 +1,76 @@
 # NEXORA ONE
 
-Bot: **@NexoraOneRoBot**. Dueño: **@PeruDoxer (7454664711)**.
-Cuenta oficial: **@OficialNexora (7151644287)**, sin privilegios automáticos.
-Todo permanece dentro de `DoxerTubeBot`. Ver `DEPLOY-NORTHFLANK.md` para montar bot y web.
+Bot de Telegram **@NexoraOneRoBot** y panel web para administrar usuarios, solicitudes, créditos y catálogo. Incluye moderación de grupos, herramientas de comunidad, automatizaciones y descargas multimedia.
 
-Bot único para Telegram. Reúne moderación, descargas, juegos y servicios. Créditos y soles usan almacenamiento separado; la web se ejecuta como un servicio independiente.
+## Estado del despliegue
 
-## Funciones principales
+La producción está separada en dos servicios de Northflank:
 
-- Moderación: anti-link, antiflood, palabras bloqueadas, captcha, warns, mute, ban, reportes, tickets y logs.
-- Administración desde `/menu`: reglas, bienvenida, staff, rangos, notas, comandos personalizados y estadísticas.
-- Multimedia: TikTok, Instagram Reels, YouTube y Facebook; video, audio MP3 o documento.
-- Economía: registro, perfil/cartera, recompensa diaria, minería, pesca, casino y rankings.
-- Comunidad: sorteos, encuestas, niveles, roles, mensajes programados y aprobación manual.
-- Utilidad: calculadora segura, letras de canciones, favoritos, historial y cola de descargas.
+- **Bot**: servicio `nexoraone`, ejecuta `Dockerfile` y usa long polling de Telegram. Debe mantenerse en una instancia y no necesita puerto público.
+- **Web**: servicio `nexoraoneweb`, ejecuta `Dockerfile.web`, publica HTTP en el puerto `8080` y ofrece el panel y la API.
+- **Base de datos**: ambos servicios usan la misma base remota de Turso. El endpoint `/health` informa el estado de la web, la base y el heartbeat del bot.
 
-Los enlaces de TikTok, Reels y Shorts enviados sin comando se descargan automáticamente.
+La guía de variables, builds y recuperación está en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md). No compartas archivos `.env`, tokens de Telegram, tokens de Turso ni claves internas.
 
-## Configuración local
+## Funciones
 
-1. Instala Python 3.11 o superior y FFmpeg.
-2. Copia `.env.example` como `.env` y agrega el token creado con BotFather.
-3. Ejecuta:
+- Moderación: enlaces, flood, palabras bloqueadas, captcha, advertencias, silencios, expulsiones, reportes y registros.
+- Administración: reglas, bienvenida, roles, notas, comandos, solicitudes y estadísticas.
+- Comunidad: sorteos, encuestas, niveles, mensajes programados y herramientas para grupos.
+- Economía: perfiles, créditos, recompensas y compras. Los créditos y los saldos en soles se mantienen separados.
+- Multimedia: descargas de TikTok, Instagram, YouTube y Facebook, según disponibilidad de cada plataforma.
+- Panel web para administrar catálogo, solicitudes, cuentas, claves y configuración.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate       # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m app.main
+Los comandos y accesos principales se organizan con `/menu`. Las funciones disponibles dependen de los permisos del bot, la configuración del grupo y los límites de cada plataforma.
+
+## Ejecución local
+
+Requisitos: Python 3.12, FFmpeg y Node.js solo si vas a ejecutar la verificación del panel.
+
+1. Crea y activa un entorno virtual:
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+2. Instala dependencias y prepara la configuración:
+
+   ```powershell
+   python -m pip install -r requirements.txt
+   Copy-Item .env.example .env
+   ```
+
+3. En `.env`, configura como mínimo `BOT_TOKEN`. Para desarrollo local, deja `DATABASE_BACKEND=sqlite`; el archivo del bot se crea en `app/data/bot.db`.
+
+4. Inicia el bot:
+
+   ```powershell
+   python -m app.main
+   ```
+
+Para ejecutar la web localmente, configura `NEXORA_PANEL_SECRET`, `NEXORA_PANEL_USER` y `NEXORA_PANEL_PASSWORD`, además de las variables de conexión entre servicios si vas a probar la API. La guía de producción explica las variables con más detalle.
+
+## Turso y persistencia
+
+En producción, bot y web deben tener `DATABASE_BACKEND=turso` y los mismos `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`. La web también requiere una `NEXORA_PANEL_SECRET` estable. El bot necesita la URL HTTPS de la web en `NEXORA_API_BASE` y la misma `NEXORA_INTERNAL_API_KEY` configurada en la web.
+
+La base productiva ya está inicializada. **No vuelvas a inicializar ni importes otra base sobre la producción.** Para crear una base Turso nueva, sigue la sección de inicialización en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md).
+
+## Verificación
+
+La suite local automatizada se ejecuta con:
+
+```powershell
+python -m unittest discover -s tests -q
+node --test tests/panel-safety.test.cjs
 ```
 
-En Telegram agrega el bot al grupo como administrador. Para que pueda revisar todos los mensajes, desactiva el modo privacidad en BotFather con `/setprivacy`.
+El flujo de despliegue también está descrito en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md). `/health` comprueba la web y el backend; `worker_online:true` confirma que el bot está enviando heartbeats.
 
-## Comandos añadidos
+## Seguridad y datos
 
-- `/play canción o enlace`: descarga audio.
-- `/playvideo`, `/ytmp4`: descarga video.
-- `/playdoc`: descarga video como documento.
-- `/tiktok`, `/instagram`, `/facebook`: descarga el enlace indicado.
-- `/register`, `/perfil`, `/daily`, `/minar`, `/pescar`, `/tragamonedas`, `/ruleta`.
-- `/ranksoles`, `/ranknivel`, `/rankrep`.
-- `/calcular 2*(5+3)`.
-- `/favoritos`, `/historial`, `/cola`.
-- `/programar`, `/programardiario`, `/programarsemanal`.
-- `/sorteo`, `/encuesta`, `/nivel`, `/rankactividad`.
-- `/exportarconfig`, `/importarconfig`, `/copiarconfig`.
-- `/autolimpieza 15`, `/idioma es|en`, `/canalobligatorio @canal`.
-
-Todos los comandos y la administración están organizados dentro del menú único `/menu`.
-
-## Variables para reglas y bienvenida
-
-Los textos configurables aceptan estas variables:
-
-- `{group}`: nombre del grupo.
-- `{name}`: nombre de la persona.
-- `{username}`: usuario de Telegram.
-- `{members}`: cantidad de miembros.
-- `{id}`: ID de la persona.
-
-Ejemplo:
-
-```text
-/setrules #{group} → REGLAS DEL GRUPO
-Respeta al staff y evita el spam.
-```
-
-## Permisos recomendados en Telegram
-
-Agrega el bot como administrador con permisos para eliminar mensajes, restringir y expulsar usuarios, fijar mensajes, invitar usuarios y administrar administradores si utilizarás promociones. En el canal de logs, copias o membresía obligatoria debe poder publicar y consultar miembros. Desactiva el modo privacidad desde BotFather para que la moderación pueda leer los mensajes del grupo.
-
-## Datos persistentes
-
-SQLite guarda reglas, economía, notas, favoritos, sorteos y programaciones en `DB_PATH`. En producción monta almacenamiento persistente en `/bot/app/data`; sin volumen, un reemplazo del contenedor puede borrar los cambios posteriores al último backup.
-
-## Hosting gratuito sin suspensión
-
-La opción recomendada para este proyecto es Northflank Sandbox: ejecuta servicios Docker continuamente sin suspensión. Consulta `DEPLOY-NORTHFLANK.md`.
-
-No publiques `.env` ni `app/data/bot.db`.
+- Los secretos van en variables protegidas de Northflank o en el `.env` local, que Git ignora.
+- No subas bases locales ni datos de usuarios al repositorio.
+- Mantén una sola instancia de bot para evitar conflictos de long polling.
+- Los archivos `.db` locales no son la fuente de datos de producción cuando `DATABASE_BACKEND=turso`.

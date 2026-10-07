@@ -22,7 +22,7 @@ no bloquea por sí solo el CI/CD de Northflank: falta conectar esa condición.
 - [ ] Unificar mensajes, menú y perfil del bot sin agregar alias.
 - [ ] Revisar visualmente todos los paneles en móvil y escritorio.
 - [ ] Inicio web con pendientes, errores y actividad reciente.
-- [ ] Salud diferenciada de bot, web y base; alertas sin duplicados.
+- [x] Salud diferenciada de bot, web y base mediante `/health` y heartbeat periódico.
 - [ ] Restauración de respaldo probada en entorno aislado.
 - [ ] Revisar permisos y retención de datos personales.
 - [ ] Condicionar despliegues a pruebas exitosas.
