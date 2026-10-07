@@ -27,10 +27,36 @@ from app.services.user_directory import init_directory, UserDirectoryMiddleware
 from app.handlers.improvements import router as improvements_router
 from app.handlers.unified import router as unified_router
 from nexora.runtime import runtime
+from nexora.comandos.utils import API_BASE, fetch_api_json_async
 from app.handlers.global_bans import router as global_bans_router
 from app.services.bans import init_bans, BanMiddleware
 
 logging.basicConfig(level=logging.INFO)
+
+
+async def worker_heartbeat_loop():
+    """Report that this bot worker is alive to the web service."""
+    if not API_BASE:
+        logging.warning("NEXORA_API_BASE no está configurada; heartbeat del worker desactivado")
+        return
+
+    event = "started"
+    while True:
+        try:
+            status, _ = await fetch_api_json_async(
+                "/internal/admin/worker-event",
+                timeout=10,
+                method="POST",
+                payload={"event": event},
+            )
+            if status != 200:
+                logging.warning("Heartbeat del worker rechazado por la web (HTTP %s)", status)
+            else:
+                logging.info("Heartbeat del worker registrado")
+        except Exception as exc:
+            logging.warning("No se pudo registrar el heartbeat del worker (%s)", type(exc).__name__)
+        event = "heartbeat"
+        await asyncio.sleep(60)
 
 
 async def main():
@@ -81,6 +107,7 @@ async def main():
     ])
 
     print("Bot iniciado correctamente...")
+    heartbeat_task = asyncio.create_task(worker_heartbeat_loop())
     asyncio.create_task(backup_loop(bot))
     asyncio.create_task(diagnostics_loop(bot))
     asyncio.create_task(media_cleanup_loop())
@@ -91,6 +118,8 @@ async def main():
         await runtime.start(BOT_TOKEN)
         await dp.start_polling(bot)
     finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
         await runtime.stop()
 
 
