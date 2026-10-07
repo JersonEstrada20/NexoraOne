@@ -32,6 +32,8 @@ from app.handlers.global_bans import router as global_bans_router
 from app.services.bans import init_bans, BanMiddleware
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full Telegram API URLs at INFO level, which would expose BOT_TOKEN.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def worker_heartbeat_loop():
