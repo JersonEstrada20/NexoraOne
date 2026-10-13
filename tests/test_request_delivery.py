@@ -52,6 +52,14 @@ class RequestChargeTests(unittest.TestCase):
                 _maybe_charge_request(None, 42, 123, 3, 0)
         debit.assert_called_once_with('123', 3, operation_id='request:42:billable-response')
 
+    def test_insufficient_balance_has_clear_reason(self):
+        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
+             patch('nexora.comandos.utils.descontar_creditos', return_value=(
+                 False, {'message': 'Créditos insuficientes para confirmar el descuento'}
+             )):
+            with self.assertRaisesRegex(RequestChargeError, 'créditos suficientes'):
+                _maybe_charge_request(None, 42, 123, 3, 0)
+
     def test_successful_debit_uses_persistent_operation_key(self):
         with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
              patch('nexora.comandos.utils.descontar_creditos', return_value=(True, {})) as debit:

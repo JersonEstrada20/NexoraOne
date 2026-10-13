@@ -3399,6 +3399,9 @@ def cred():
             conn.rollback()
             return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
         current = int(fresh[0] or 0)
+        if operation_id and current < cantidad:
+            conn.rollback()
+            return jsonify({"status": "error", "message": "Créditos insuficientes para confirmar el descuento"}), 402
         new_val = cantidad if oper == "igualar" else (current + cantidad if oper == "sumar" else max(0, current - cantidad))
         cur.execute("UPDATE usuarios SET creditos = ? WHERE id_tg = ?", (new_val, id_tg))
         if operation_id:

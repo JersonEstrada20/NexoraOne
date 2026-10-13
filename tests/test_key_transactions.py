@@ -149,3 +149,11 @@ class KeyTransactions(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.state()[0], 5)
+
+    def test_idempotent_user_debit_rejects_insufficient_balance(self):
+        response = self.client.post('/cred', json={
+            'ID_TG': '123', 'operacion': 'restar', 'cantidad': 6,
+            'operation_id': 'request:45:billable-response',
+        })
+        self.assertEqual(response.status_code, 402)
+        self.assertEqual(self.state()[0], 5)

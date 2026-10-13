@@ -375,5 +375,5 @@ def descontar_creditos(id_tg: str, cantidad: int = 1, operation_id: str | None =
         },
     )
     if st != 200:
-        return False, {}
+        return False, js if isinstance(js, dict) else {}
     return True, js.get("data", {}) or {}

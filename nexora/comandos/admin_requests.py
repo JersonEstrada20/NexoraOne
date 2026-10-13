@@ -630,10 +630,12 @@ def _maybe_charge_request(cursor, request_id: int, user_id: int, cost: int, alre
             raise RequestChargeError("No se envió la respuesta: la cuenta del usuario está inactiva.")
         raise RequestChargeError("No se pudo comprobar la cuenta. No se envió la respuesta ni se confirmó un cobro.")
     if not info.get("ilimitado", False):
-        ok, _ = descontar_creditos(
+        ok, result = descontar_creditos(
             str(user_id), cost, operation_id=f"request:{request_id}:billable-response"
         )
         if not ok:
+            if (result or {}).get("message") == "Créditos insuficientes para confirmar el descuento":
+                raise RequestChargeError("No se envió la respuesta: el usuario no tiene créditos suficientes.")
             raise RequestChargeError(
                 "No se confirmó el descuento. No se envió la respuesta; puedes reintentar con seguridad."
             )
