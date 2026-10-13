@@ -74,3 +74,6 @@ El flujo de despliegue también está descrito en [DEPLOY-NORTHFLANK.md](DEPLOY-
 - No subas bases locales ni datos de usuarios al repositorio.
 - Mantén una sola instancia de bot para evitar conflictos de long polling.
 - Los archivos `.db` locales no son la fuente de datos de producción cuando `DATABASE_BACKEND=turso`.
+- La limpieza del historial es manual, solo para el fundador, y exige vista previa, confirmación y respaldo previo. No hay borrado automático de datos personales.
+- La restauración web está limitada a bases SQLite locales; valida integridad y guarda una copia de seguridad antes de reemplazar archivos.
+- Aún falta acordar un plazo de retención de datos y activar la condición de checks exitosos en la configuración de despliegue de Northflank.

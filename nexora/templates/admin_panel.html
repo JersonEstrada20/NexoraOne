@@ -194,6 +194,38 @@
           <div class="metric"><span class="pill">Activos</span><h3>{{ commands|selectattr('is_active')|list|length }}</h3><div class="small">Disponibles para uso</div></div>
           <div class="metric"><span class="pill">Paquetes</span><h3>{{ buy_packages|length }}</h3><div class="small">Líneas para /buy</div></div>
         </div>
+        {% if panel_role in ['FUNDADOR', 'CO-FUNDADOR', 'SOPORTE'] %}
+        <div class="section-grid" style="margin-top:16px;">
+          <div class="mini-card">
+            <div class="toolbar"><strong>Atención</strong><a href="{{ url_for('admin_panel', section='solicitudes') }}">Abrir bandeja</a></div>
+            <h3>{{ dashboard.pendientes }} solicitudes pendientes</h3>
+            <div class="small">Solicitudes recibidas que todavía esperan respuesta.</div>
+          </div>
+          {% if panel_role == 'FUNDADOR' %}
+          <div class="mini-card">
+            <div class="toolbar"><strong>Errores del último día</strong><a href="{{ url_for('admin_panel', section='sistema') }}">Ver sistema</a></div>
+            <h3>{{ dashboard.errores_recientes }}</h3>
+            <div class="small">Dentro de los últimos 50 errores guardados.</div>
+          </div>
+          {% endif %}
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h3>Actividad reciente</h3>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Comando</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for item in dashboard.actividad_reciente %}
+                <tr><td><strong>{{ item.consulta }}</strong></td><td>{{ item.fecha }}</td></tr>
+                {% endfor %}
+                {% if not dashboard.actividad_reciente %}
+                <tr><td colspan="2">Todavía no hay actividad para mostrar.</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
         <div class="preview-grid">
           <div class="preview-card">
             <strong>Preview /start</strong>

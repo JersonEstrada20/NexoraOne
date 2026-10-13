@@ -1312,6 +1312,8 @@ def get_dashboard_snapshot(vendor_id: str = ""):
         "consultas": 0,
         "pendientes": 0,
         "ventas": 0,
+        "errores_recientes": 0,
+        "actividad_reciente": [],
         "periods": {
             "today": {"label": "Hoy", "consultas": 0, "ventas": 0, "solicitudes": 0},
             "last_7": {"label": "7 dias", "consultas": 0, "ventas": 0, "solicitudes": 0},
@@ -1387,7 +1389,20 @@ def get_dashboard_snapshot(vendor_id: str = ""):
             (cutoff_iso["last_30"],),
         )
         data["consultas_por_dia"] = [{"dia": r[0], "total": r[1]} for r in cur.fetchall()]
+        cur.execute("SELECT consulta, fecha FROM historial ORDER BY fecha DESC LIMIT 5")
+        data["actividad_reciente"] = [
+            {"consulta": str(r[0] or "—"), "fecha": str(r[1] or "—")}
+            for r in cur.fetchall()
+        ]
         conn.close()
+    except Exception:
+        pass
+    try:
+        recent_errors = get_error_logs(limit=50)
+        one_day_ago = (now - timedelta(days=1)).replace(microsecond=0).isoformat() + "Z"
+        data["errores_recientes"] = sum(
+            1 for item in recent_errors if str(item.get("created_at") or "") >= one_day_ago
+        )
     except Exception:
         pass
     try:
@@ -5554,14 +5569,23 @@ def admin_restore_db_backup():
             if not restore_names:
                 return redirect(url_for("admin_panel", section="herramientas", flash="El ZIP no contiene DB reconocidas de NEXORA ONE."))
 
-            safety_path = create_named_db_backup("nexora-before-restore")
             for name in restore_names:
                 target = allowed_paths[name]
                 tmp_path = f"{target}.restore.tmp"
                 with zf.open(members[name]) as src, open(tmp_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 temp_paths.append((tmp_path, target))
+                if os.path.getsize(tmp_path) < 16:
+                    raise ValueError("La base restaurada está vacía o incompleta.")
+                staged_db = sqlite3.connect(tmp_path)
+                try:
+                    integrity = staged_db.execute("PRAGMA integrity_check").fetchone()
+                finally:
+                    staged_db.close()
+                if not integrity or str(integrity[0]).lower() != "ok":
+                    raise ValueError("La base restaurada no pasó la comprobación de integridad.")
 
+        safety_path = create_named_db_backup("nexora-before-restore")
         for tmp_path, target in temp_paths:
             os.replace(tmp_path, target)
         restored = ", ".join(restore_names)
@@ -5576,8 +5600,8 @@ def admin_restore_db_backup():
         )
     except zipfile.BadZipFile:
         return redirect(url_for("admin_panel", section="herramientas", flash="ZIP inválido."))
-    except Exception as exc:
-        return redirect(url_for("admin_panel", section="herramientas", flash=f"No se pudo restaurar backup: {exc}"))
+    except Exception:
+        return redirect(url_for("admin_panel", section="herramientas", flash="No se pudo validar o completar la restauración. Revisa el respaldo previo antes de reintentar."))
     finally:
         for tmp_path, _target in temp_paths:
             if os.path.exists(tmp_path):
@@ -5589,7 +5613,7 @@ def admin_restore_db_backup():
 
 @app.route("/admin/maintenance/cleanup-history", methods=["POST"])
 def admin_cleanup_history():
-    gate = require_panel_login()
+    gate = require_panel_roles("FUNDADOR")
     if gate:
         return gate
     try:
