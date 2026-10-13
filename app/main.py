@@ -105,6 +105,7 @@ async def main():
         raise RuntimeError(f"La base de datos no pasó la comprobación inicial: {db_health}")
     logging.info("Comprobación inicial correcta: base de datos íntegra")
     await bot.set_my_commands([
+        BotCommand(command="start", description="Iniciar y ver el menú"),
         BotCommand(command="menu", description="Abrir todos los comandos del bot"),
     ])
 

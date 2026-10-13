@@ -7,7 +7,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from nexora.comandos.admin_requests import create_request
-from nexora.comandos.utils import configured_admin_ids, get_command_runtime_config, verificar_usuario
+from nexora.comandos.utils import (
+    account_access_message,
+    configured_admin_ids,
+    get_command_runtime_config,
+    verificar_usuario,
+)
 
 CONFIG_FILE_PATH = "config.json"
 
@@ -266,7 +271,7 @@ async def handle_request_command(
 
     valido, info_usuario = verificar_usuario(str(user.id))
     if not valido:
-        await msg.reply_text("🚫 Tu cuenta no está activa o no existe.")
+        await msg.reply_text(account_access_message(info_usuario))
         return
 
     command_cfg = get_command_runtime_config(command, default_cost)

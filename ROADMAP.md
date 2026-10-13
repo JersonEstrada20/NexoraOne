@@ -10,6 +10,7 @@
 - [x] Errores de servicios con referencia y sin texto crudo de excepciones.
 - [x] Ocultar detalles internos de errores 5xx y autenticación en Telegram.
 - [x] Workflow de pruebas Python y JavaScript sin credenciales de producción.
+- [x] Bienvenida `/start`, menú con acceso visible al registro gratuito y mensajes que distinguen cuenta faltante, inactiva y servicio caído.
 
 La protección del navegador no garantiza cobros únicos. El workflow de pruebas
 no bloquea por sí solo el CI/CD de Northflank: falta conectar esa condición.

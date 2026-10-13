@@ -7,7 +7,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from nexora.comandos.admin_requests import create_request
-from nexora.comandos.utils import configured_admin_ids, get_command_runtime_config, verificar_usuario
+from nexora.comandos.utils import (
+    account_access_message,
+    configured_admin_ids,
+    get_command_runtime_config,
+    verificar_usuario,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -301,7 +306,7 @@ async def manual_catalog_command(update: Update, context: ContextTypes.DEFAULT_T
 
     valido, info_usuario = verificar_usuario(str(user.id))
     if not valido:
-        await msg.reply_text("🚫 Tu cuenta no está activa o no existe.")
+        await msg.reply_text(account_access_message(info_usuario))
         return
 
     ilimitado = info_usuario.get("ilimitado", False)

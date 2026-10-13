@@ -165,16 +165,21 @@ def verificar_usuario(id_tg: str):
     Devuelve (False, data) si no existe o está inactivo.
     """
     if not API_BASE:
-        return False, {}
+        return False, {"_account_state": "unavailable"}
 
     st, js = fetch_api_json(f"/tg_info?ID_TG={_urlparse.quote(id_tg)}")
+    if st == 404:
+        return False, {"_account_state": "missing"}
+    if st in {401, 403}:
+        return False, {"_account_state": "unavailable"}
     if st != 200:
-        return False, {}
+        return False, {"_account_state": "unavailable"}
 
     data = js.get("data", {}) or {}
     estado = (data.get("ESTADO") or "").upper().strip()
 
     if estado != "ACTIVO":
+        data["_account_state"] = "inactive"
         return False, data
 
     from datetime import datetime, timezone
@@ -189,7 +194,28 @@ def verificar_usuario(id_tg: str):
             ilimitado = False
 
     data["ilimitado"] = ilimitado
+    data["_account_state"] = "active"
     return True, data
+
+
+def account_access_message(info: dict | None = None) -> str:
+    """Explain the next step without confusing missing accounts with outages."""
+    state = (info or {}).get("_account_state")
+    if state == "missing":
+        return (
+            "\U0001f464 A\xfan no tienes una cuenta de servicios.\n\n"
+            "Para crearla, env\xeda /register y vuelve a intentar tu consulta. "
+            "El registro es gratuito."
+        )
+    if state == "inactive":
+        return (
+            "\U0001f512 Tu cuenta existe, pero est\xe1 inactiva.\n\n"
+            "Escribe a @OficialNexora para revisar el acceso; volver a registrarte no la activar\xe1."
+        )
+    return (
+        "\u26a0\ufe0f No pude comprobar tu cuenta porque el servicio de cuentas no responde.\n\n"
+        "No se proces\xf3 la consulta. Int\xe9ntalo de nuevo m\xe1s tarde; no necesitas registrarte otra vez."
+    )
 
 
 def _catalog_conn():

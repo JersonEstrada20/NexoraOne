@@ -21,7 +21,7 @@ La guía de variables, builds y recuperación está en [DEPLOY-NORTHFLANK.md](DE
 - Multimedia: descargas de TikTok, Instagram, YouTube y Facebook, según disponibilidad de cada plataforma.
 - Panel web para administrar catálogo, solicitudes, cuentas, claves y configuración.
 
-Los comandos y accesos principales se organizan con `/menu`. Las funciones disponibles dependen de los permisos del bot, la configuración del grupo y los límites de cada plataforma.
+`/start` da la bienvenida y abre el menú; `/menu` vuelve a mostrar las categorías. Para Consultas y Servicios, la cuenta se crea gratis con `/register`. Si una cuenta está desactivada, el bot indica el contacto oficial; si la web no responde, pide intentarlo más tarde en vez de registrarse otra vez. Las funciones disponibles dependen de los permisos del bot, la configuración del grupo y los límites de cada plataforma.
 
 ## Ejecución local
 

@@ -1,5 +1,5 @@
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.services.database import get_settings
@@ -158,21 +158,28 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
             continue
         builder.button(text=label, callback_data=f"mainmenu:{key}")
     if section == "home":
-        builder.button(text="💳 Servicios", callback_data="unified:0:catalog")
-        builder.button(text="📝 Registrarme", callback_data="unified:0:register")
-        builder.button(text="👤 Mi perfil", callback_data="unified:0:profile")
-        builder.button(text="📚 Mi historial", callback_data="unified:0:historymenu")
+        home_actions = (
+            [("💳 Services", "unified:0:catalog"), ("📝 Register", "unified:0:register"),
+             ("👤 My profile", "unified:0:profile"), ("📚 My history", "unified:0:historymenu")]
+            if language == "en" else
+            [("💳 Consultas y servicios", "unified:0:catalog"), ("📝 Crear cuenta gratis", "unified:0:register"),
+             ("👤 Mi perfil", "unified:0:profile"), ("📚 Mi historial", "unified:0:historymenu")]
+        )
+        for label, callback_data in home_actions:
+            builder.button(text=label, callback_data=callback_data)
         if role != "user":
-            builder.button(text="🎛 Paneladmin", callback_data="unified:0:paneladmin")
-        builder.button(text="💡 Send suggestion" if language == "en" else "💡 Enviar sugerencia", callback_data="suggest:start")
+            label = "🎛 Admin panel" if language == "en" else "🎛 Panel de administración"
+            builder.button(text=label, callback_data="unified:0:paneladmin")
+        label = "💡 Send suggestion" if language == "en" else "💡 Enviar sugerencia"
+        builder.button(text=label, callback_data="suggest:start")
     if role != "user" and section in {"settings", "moderation", "staff", "grouptools"}:
-        builder.button(text="🎛 Paneladmin", callback_data="unified:0:paneladmin")
+        builder.button(text="\U0001f39b Admin panel" if language == "en" else "\U0001f39b Panel de administración", callback_data="unified:0:paneladmin")
     if section == "downloads" and role == "owner":
         builder.button(text="📥 Download panel" if language == "en" else "📥 Panel de descargas", callback_data="downloads:panel")
     if role == "owner" and section == "home":
-        builder.button(text="👑 Control de descargas", callback_data="downloads:panel")
+        builder.button(text="\U0001f451 Download controls" if language == "en" else "\U0001f451 Control de descargas", callback_data="downloads:panel")
     if role != "user" and section == "settings":
-        builder.button(text="🪄 Configuración guiada", callback_data="setup:home")
+        builder.button(text="\U0001fa84 Guided setup" if language == "en" else "\U0001fa84 Configuración guiada", callback_data="setup:home")
     if section != "home":
         builder.button(text="🏠 Home" if language == "en" else "🏠 Inicio", callback_data="mainmenu:home")
         builder.adjust(2, 2, 2, 1, 1, 1)
@@ -182,10 +189,25 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
 
 
 HOME = (
-    "🤖 <b>NEXORA ONE — Menú principal</b>\n\n"
-    "Elige una categoría. Los botones muestran todos los comandos y ejemplos de uso."
+    "\U0001f916 <b>NEXORA ONE</b>\n\n"
+    "Elige una categoría para ver sus comandos y ejemplos.\n"
+    "Para usar Consultas y Servicios, primero crea tu cuenta gratis con /register."
 )
-HOME_EN = "🤖 <b>NEXORA ONE — Main menu</b>\n\nChoose a category to view its commands and controls."
+HOME_EN = (
+    "\U0001f916 <b>NEXORA ONE</b>\n\n"
+    "Choose a category to see its commands and examples.\n"
+    "To use Services, first create your free account with /register."
+)
+WELCOME = (
+    "¡Hola, {name}! 👋\n\n"
+    "Soy <b>NEXORA ONE</b>. Puedo ayudarte con herramientas del grupo, comunidad, juegos y multimedia.\n\n"
+    "Abre el menú para explorar. Si quieres usar Consultas y Servicios, crea primero tu cuenta gratis con /register."
+)
+WELCOME_EN = (
+    "Hi, {name}! 👋\n\n"
+    "I am <b>NEXORA ONE</b>. I can help with group tools, community, games, and media.\n\n"
+    "Open the menu to explore. To use Services, create your free account first with /register."
+)
 
 
 @router.message(Command("menu"))
@@ -194,6 +216,19 @@ async def main_menu(message: Message):
     home = HOME_EN if language == "en" else HOME
     role = await menu_role(message.bot, message.chat.id, message.from_user.id)
     await message.reply(home, parse_mode="HTML", reply_markup=menu_keyboard(language=language, role=role))
+
+
+@router.message(CommandStart())
+async def start(message: Message):
+    language = (await get_settings(message.chat.id)).get("language", "es")
+    role = await menu_role(message.bot, message.chat.id, message.from_user.id)
+    template = WELCOME_EN if language == "en" else WELCOME
+    name = (message.from_user.first_name or "").strip() or "amigo"
+    await message.reply(
+        template.format(name=name),
+        parse_mode="HTML",
+        reply_markup=menu_keyboard(language=language, role=role),
+    )
 
 
 async def menu_role(bot, chat_id, user_id):
