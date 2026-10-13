@@ -53,6 +53,8 @@ Un build verde confirma que la imagen se creó; no confirma por sí solo la cone
 
 ### Bloquear despliegues si fallan las pruebas
 
+El workflow actual comprueba Python y JavaScript en cada PR y push. La regla de protección de `main` se configura en GitHub y no se activa desde el YAML del repositorio. Al habilitarla, exige PR y el check `Tests / test`; no exijas aprobación adicional si eres el único mantenedor. Mantén desactivados force pushes y eliminación de la rama.
+
 El workflow `.github/workflows/tests.yml` ejecuta la suite Python y las pruebas JavaScript al hacer push y al abrir un pull request. Northflank CI/CD, por separado, construye y despliega la rama conectada; ejecutar GitHub Actions no bloquea ese disparador automáticamente.
 
 Para que solo lleguen a `main` cambios con pruebas aprobadas:

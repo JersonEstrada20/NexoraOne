@@ -1,5 +1,7 @@
 # NEXORA ONE
 
+El inventario inicial de datos, las medidas vigentes y los pasos pendientes para fijar retención están en [DATA-RETENTION.md](DATA-RETENTION.md). No se ejecuta una purga automática general.
+
 Bot de Telegram **@NexoraOneRoBot** y panel web para administrar usuarios, solicitudes, créditos y catálogo. Incluye moderación de grupos, herramientas de comunidad, automatizaciones y descargas multimedia.
 
 ## Estado del despliegue
@@ -75,6 +77,6 @@ El flujo de despliegue también está descrito en [DEPLOY-NORTHFLANK.md](DEPLOY-
 - No subas bases locales ni datos de usuarios al repositorio.
 - Mantén una sola instancia de bot para evitar conflictos de long polling.
 - Los archivos `.db` locales no son la fuente de datos de producción cuando `DATABASE_BACKEND=turso`.
-- La limpieza del historial es manual, solo para el fundador, y exige vista previa, confirmación y respaldo previo. No hay borrado automático de datos personales.
+- La eliminación manual de historiales personales es solo para el fundador y exige vista previa, confirmación y respaldo previo. El historial de descargas se purga a los 30 días; el detalle y las limitaciones están en [DATA-RETENTION.md](DATA-RETENTION.md).
 - La restauración web está limitada a bases SQLite locales; valida integridad y guarda una copia de seguridad antes de reemplazar archivos.
-- Aún falta acordar un plazo de retención de datos y activar la condición de checks exitosos en la configuración de despliegue de Northflank.
+- La política de retención inicial está en [DATA-RETENTION.md](DATA-RETENTION.md); la protección de `main` requiere activar en GitHub la regla de PR y el check obligatorio descritos en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md).
