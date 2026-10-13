@@ -1154,6 +1154,26 @@ def save_panel_setting_value(key: str, value: str):
     conn.close()
 
 
+def save_panel_setting_values(values: dict[str, str]):
+    """Persist related panel settings in one transaction."""
+    conn = get_conn(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.executemany(
+            """
+            INSERT INTO panel_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            list(values.items()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def verify_panel_password(password: str) -> bool:
     stored_hash = get_panel_setting("PANEL_PASSWORD_HASH", "")
     if stored_hash:
@@ -4383,13 +4403,17 @@ def internal_admin_worker_event():
     event = str(request_value("event") or "").strip().lower()
     detail = str(request_value("detail") or "").strip()
     now = now_iso()
-    save_panel_setting_value("WORKER_LAST_SEEN", now)
-    save_panel_setting_value("WORKER_LAST_EVENT", event or "heartbeat")
+    settings_to_save = {
+        "WORKER_LAST_SEEN": now,
+        "WORKER_LAST_EVENT": event or "heartbeat",
+    }
     if event == "polling_conflict":
-        save_panel_setting_value("WORKER_LAST_POLLING_CONFLICT", now)
-        log_audit_event("worker.polling_conflict", "telegram", detail[:300], actor=bot_actor())
+        settings_to_save["WORKER_LAST_POLLING_CONFLICT"] = now
     elif event in {"started", "heartbeat"}:
-        save_panel_setting_value("WORKER_LAST_POLLING_CONFLICT", "")
+        settings_to_save["WORKER_LAST_POLLING_CONFLICT"] = ""
+    save_panel_setting_values(settings_to_save)
+    if event == "polling_conflict":
+        log_audit_event("worker.polling_conflict", "telegram", detail[:300], actor=bot_actor())
     return jsonify({"status": "ok", "event": event or "heartbeat", "time": now}), 200
 
 
@@ -4525,6 +4549,16 @@ def admin_panel():
     except Exception:
         cmd_page = 1
     paged_commands, cmd_page, cmd_total_pages, cmd_total = paginate_items(filtered_commands, cmd_page, per_page=10)
+    error_logs = get_error_logs(limit=50)
+    error_alert = None
+    cutoff = now_utc() - timedelta(hours=24)
+    for error in error_logs:
+        try:
+            if parse_iso(str(error.get("created_at") or "")) >= cutoff:
+                error_alert = error
+                break
+        except (TypeError, ValueError):
+            continue
     return render_template(
         "admin_panel.html",
         categories=categories,
@@ -4555,7 +4589,8 @@ def admin_panel():
         panel_accounts=get_panel_accounts(),
         panel_roles=sorted(PANEL_ROLES),
         history_cleanup_preview=get_history_cleanup_preview(),
-        error_logs=get_error_logs(limit=50),
+        error_logs=error_logs,
+        error_alert=error_alert,
         audit_logs=get_audit_logs(limit=80, action=audit_action, actor=audit_actor, target=audit_target),
         audit_action=audit_action,
         audit_actor=audit_actor,

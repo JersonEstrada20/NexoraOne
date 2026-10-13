@@ -153,11 +153,11 @@
         </div>
       </div>
       {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
-      {% if error_logs %}
+      {% if error_alert %}
       <div class="flash alert-card">
         <strong>Alerta de errores 500:</strong>
-        último error en <code>{{ error_logs[0].method }} {{ error_logs[0].path }}</code>
-        <span class="small">{{ error_logs[0].created_at or '' }}</span>
+        último error en las últimas 24 horas: <code>{{ error_alert.method }} {{ error_alert.path }}</code>
+        <span class="small">{{ error_alert.created_at or '' }}</span>
         · <a href="{{ url_for('admin_panel', section='sistema') }}">Ver logs</a>
       </div>
       {% endif %}

@@ -26,6 +26,7 @@ no bloquea por sí solo el CI/CD de Northflank: falta conectar esa condición.
 - [ ] Revisar visualmente todos los paneles en móvil y escritorio.
 - [x] Inicio web con solicitudes pendientes, errores recientes y actividad reciente sin IDs de usuarios.
 - [x] Salud diferenciada de bot, web y base mediante `/health` y heartbeat periódico.
+- [x] La alerta 500 solo aparece para errores de las ultimas 24 horas y el heartbeat guarda sus campos en una transaccion; el historial conserva los registros anteriores.
 - [x] Restauración local de respaldo probada en entorno aislado; valida integridad antes de reemplazar y guarda una copia previa.
 - [x] Limpieza de historial restringida al fundador, con vista previa, confirmación y backup previo.
 - [ ] Acordar cuánto tiempo conservar datos personales; por ahora la limpieza es manual y no se borra información automáticamente.
