@@ -1,8 +1,12 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from nexora.comandos.admin_requests import _send_delivery_message
+from nexora.comandos.admin_requests import (
+    RequestChargeError,
+    _maybe_charge_request,
+    _send_delivery_message,
+)
 
 
 class RequestDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -38,3 +42,25 @@ class RequestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.side_effect = RuntimeError('test failure')
         with self.assertRaisesRegex(RuntimeError, 'test failure'):
             await _send_delivery_message(SimpleNamespace(bot=bot), [1, 123], 'Respuesta')
+
+
+class RequestChargeTests(unittest.TestCase):
+    def test_failed_debit_blocks_billable_response(self):
+        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
+             patch('nexora.comandos.utils.descontar_creditos', return_value=(False, {})) as debit:
+            with self.assertRaises(RequestChargeError):
+                _maybe_charge_request(None, 42, 123, 3, 0)
+        debit.assert_called_once_with('123', 3, operation_id='request:42:billable-response')
+
+    def test_successful_debit_uses_persistent_operation_key(self):
+        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
+             patch('nexora.comandos.utils.descontar_creditos', return_value=(True, {})) as debit:
+            self.assertEqual(_maybe_charge_request(None, 42, 123, 3, 0), 1)
+        debit.assert_called_once_with('123', 3, operation_id='request:42:billable-response')
+
+    def test_already_charged_request_does_not_call_credit_api(self):
+        with patch('nexora.comandos.utils.verificar_usuario') as verify, \
+             patch('nexora.comandos.utils.descontar_creditos') as debit:
+            self.assertEqual(_maybe_charge_request(None, 42, 123, 3, 1), 1)
+        verify.assert_not_called()
+        debit.assert_not_called()

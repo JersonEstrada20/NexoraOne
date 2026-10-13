@@ -360,14 +360,19 @@ def get_command_runtime_config(command_slug: str, default_cost: int = 1):
     }
 
 
-def descontar_creditos(id_tg: str, cantidad: int = 1):
+def descontar_creditos(id_tg: str, cantidad: int = 1, operation_id: str | None = None):
     if not API_BASE:
         return False, {}
 
     st, js = fetch_api_json(
         "/cred",
         method="POST",
-        payload={"ID_TG": id_tg, "operacion": "restar", "cantidad": cantidad},
+        payload={
+            "ID_TG": id_tg,
+            "operacion": "restar",
+            "cantidad": cantidad,
+            **({"operation_id": operation_id} if operation_id else {}),
+        },
     )
     if st != 200:
         return False, {}

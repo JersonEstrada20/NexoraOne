@@ -612,14 +612,31 @@ def _mark_request_delivery(cursor, request_id: int, admin_id: int | None, note: 
     )
 
 
-def _maybe_charge_request(cursor, user_id: int, cost: int, already_charged: int) -> int:
+class RequestChargeError(RuntimeError):
+    pass
+
+
+def _maybe_charge_request(cursor, request_id: int, user_id: int, cost: int, already_charged: int) -> int:
     if already_charged:
         return 1
     from nexora.comandos.utils import descontar_creditos, verificar_usuario
 
     valido, info = verificar_usuario(str(user_id))
-    if valido and not info.get("ilimitado", False):
-        descontar_creditos(str(user_id), cost)
+    if not valido:
+        state = (info or {}).get("_account_state")
+        if state == "missing":
+            raise RequestChargeError("No se envió la respuesta: el usuario no tiene cuenta de servicios.")
+        if state == "inactive":
+            raise RequestChargeError("No se envió la respuesta: la cuenta del usuario está inactiva.")
+        raise RequestChargeError("No se pudo comprobar la cuenta. No se envió la respuesta ni se confirmó un cobro.")
+    if not info.get("ilimitado", False):
+        ok, _ = descontar_creditos(
+            str(user_id), cost, operation_id=f"request:{request_id}:billable-response"
+        )
+        if not ok:
+            raise RequestChargeError(
+                "No se confirmó el descuento. No se envió la respuesta; puedes reintentar con seguridad."
+            )
     return 1
 
 
@@ -712,7 +729,11 @@ async def _send_request_reply(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
 
     if _should_charge(reply_text):
-        charged = _maybe_charge_request(c, user_id, cost, int(charged or 0))
+        try:
+            charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+        except RequestChargeError as exc:
+            conn.close()
+            return False, str(exc)
 
     await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, reply_text))
     _mark_request_delivery(c, request_id, admin_id, reply_text, charged=int(charged or 0), resolved=False)
@@ -828,7 +849,11 @@ async def _send_template_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
 
     if _should_charge(template_text, template_key):
-        charged = _maybe_charge_request(c, user_id, cost, int(charged or 0))
+        try:
+            charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+        except RequestChargeError as exc:
+            conn.close()
+            return False, str(exc)
 
     await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, template_text))
     _mark_request_delivery(c, request_id, admin_id, f"[template:{template_key}] {template_text}", charged=int(charged or 0), resolved=False)

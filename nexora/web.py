@@ -3352,6 +3352,12 @@ def cred():
     if oper not in ("igualar", "sumar", "restar"):
         return jsonify({"status": "error", "message": "operacion debe ser igualar, sumar o restar"}), 400
 
+    operation_id = (request_value("operation_id") or "").strip()
+    if operation_id and (len(operation_id) > 128 or not all(ch.isalnum() or ch in ":_-" for ch in operation_id)):
+        return jsonify({"status": "error", "message": "operation_id no es válido"}), 400
+    if operation_id and oper != "restar":
+        return jsonify({"status": "error", "message": "operation_id solo está disponible para descuentos"}), 400
+
     row = get_user_by_id(id_tg)
     if not row:
         return jsonify({"status": "error", "message": "Usuario no encontrado"}), 404
@@ -3359,7 +3365,34 @@ def cred():
     conn = get_conn()
     try:
         cur = conn.cursor()
+        if operation_id:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS credit_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    balance_after INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
         cur.execute("BEGIN IMMEDIATE")
+        if operation_id:
+            cur.execute(
+                "SELECT user_id, operation, amount, balance_after FROM credit_operations WHERE operation_id=?",
+                (operation_id,),
+            )
+            prior = cur.fetchone()
+            if prior:
+                if str(prior[0]) != str(id_tg) or prior[1] != oper or int(prior[2]) != cantidad:
+                    conn.rollback()
+                    return jsonify({"status": "error", "message": "operation_id ya fue usado con otros datos"}), 409
+                return jsonify({
+                    "status": "ok", "message": "Descuento ya confirmado anteriormente",
+                    "CREDITOS": int(prior[3]), "idempotent_replay": True,
+                }), 200
         cur.execute("SELECT creditos FROM usuarios WHERE id_tg=?", (id_tg,))
         fresh = cur.fetchone()
         if not fresh:
@@ -3368,6 +3401,11 @@ def cred():
         current = int(fresh[0] or 0)
         new_val = cantidad if oper == "igualar" else (current + cantidad if oper == "sumar" else max(0, current - cantidad))
         cur.execute("UPDATE usuarios SET creditos = ? WHERE id_tg = ?", (new_val, id_tg))
+        if operation_id:
+            cur.execute(
+                "INSERT INTO credit_operations(operation_id,user_id,operation,amount,balance_after,created_at) VALUES(?,?,?,?,?,?)",
+                (operation_id, str(id_tg), oper, cantidad, new_val, now_iso()),
+            )
         conn.commit()
     except sqlite3.OperationalError:
         try:

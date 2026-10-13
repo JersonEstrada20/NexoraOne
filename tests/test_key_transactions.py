@@ -36,7 +36,7 @@ class KeyTransactions(unittest.TestCase):
                    init_keys_db=lambda: None, get_conn=self.connect,
                    KEYS_DB_PATH=self.path, remote_enabled=lambda: True,
                    record_purchase_event=lambda **k: 1, log_audit_event=lambda *a, **k: None,
-                   bot_actor=lambda: 'test', sqlite3=sqlite3)
+                   bot_actor=lambda: 'test', sqlite3=sqlite3, now_iso=lambda: '2026-01-01T00:00:00Z')
         tree = ast.parse(Path('nexora/web.py').read_text(encoding='utf-8'))
         routes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('keys_redeem', 'cred')]
         exec(compile(ast.Module(body=routes, type_ignores=[]), 'transaction_routes', 'exec'), env)
@@ -103,3 +103,49 @@ class KeyTransactions(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(self.state()[0], 12)
         self.assertEqual(self.commits, 1)
+
+    def test_idempotent_debit_replay_does_not_charge_twice(self):
+        payload = {
+            'ID_TG': '123', 'operacion': 'restar', 'cantidad': 3,
+            'operation_id': 'request:42:billable-response',
+        }
+        first = self.client.post('/cred', json=payload)
+        replay = self.client.post('/cred', json=payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json['idempotent_replay'])
+        self.assertEqual(self.state()[0], 2)
+        self.assertEqual(self.commits, 1)
+
+    def test_idempotent_debit_recovers_lost_commit_ack(self):
+        payload = {
+            'ID_TG': '123', 'operacion': 'restar', 'cantidad': 3,
+            'operation_id': 'request:43:billable-response',
+        }
+        self.failure = 'after'
+        self.assertEqual(self.client.post('/cred', json=payload).status_code, 503)
+        self.assertEqual(self.state()[0], 2)
+        self.failure = None
+        replay = self.client.post('/cred', json=payload)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json['idempotent_replay'])
+        self.assertEqual(self.state()[0], 2)
+        self.assertEqual(self.commits, 1)
+
+    def test_idempotency_key_cannot_be_reused_for_different_debit(self):
+        payload = {
+            'ID_TG': '123', 'operacion': 'restar', 'cantidad': 3,
+            'operation_id': 'request:44:billable-response',
+        }
+        self.assertEqual(self.client.post('/cred', json=payload).status_code, 200)
+        payload['cantidad'] = 4
+        self.assertEqual(self.client.post('/cred', json=payload).status_code, 409)
+        self.assertEqual(self.state()[0], 2)
+
+    def test_idempotency_key_validation(self):
+        response = self.client.post('/cred', json={
+            'ID_TG': '123', 'operacion': 'restar', 'cantidad': 3,
+            'operation_id': 'bad/key',
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.state()[0], 5)

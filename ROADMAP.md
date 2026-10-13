@@ -17,8 +17,9 @@ no bloquea por sí solo el CI/CD de Northflank: falta conectar esa condición.
 
 ## Pendiente
 
-- [ ] Idempotencia persistente de cobros y entregas, incluso después de reinicios.
-- [ ] Pruebas de fallos entre cobro, envío y confirmación; no reintentar resultados ambiguos.
+- [x] Descuentos de respuestas con clave idempotente persistente; reintentos tras confirmación perdida no vuelven a cobrar.
+- [ ] Entrega exactamente una vez y conciliación de envíos ambiguos de Telegram; el envío de Telegram no ofrece clave idempotente.
+- [x] Pruebas de descuento antes y después del commit, replay idempotente y bloqueo de respuesta cuando no se confirma el cobro.
 - [ ] Historial de conversación y estados de atención en la bandeja.
 - [ ] Unificar mensajes, menú y perfil del bot sin agregar alias.
 - [ ] Revisar visualmente todos los paneles en móvil y escritorio.
