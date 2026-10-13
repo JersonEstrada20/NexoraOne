@@ -18,10 +18,10 @@ no bloquea por sí solo el CI/CD de Northflank: falta conectar esa condición.
 ## Pendiente
 
 - [x] Descuentos de respuestas con clave idempotente persistente; reintentos tras confirmación perdida no vuelven a cobrar.
-- [ ] Entrega exactamente una vez y conciliación de envíos ambiguos de Telegram; el envío de Telegram no ofrece clave idempotente.
+- [x] Entregas con resultado ambiguo quedan bloqueadas contra reintento ciego y se concilian manualmente en el panel; Telegram no garantiza entrega exactamente una vez.
 - [x] Pruebas de descuento antes y después del commit, replay idempotente y bloqueo de respuesta cuando no se confirma el cobro.
 - [x] La bandeja guarda estados de solicitudes y notas de atención con fecha, y muestra registros recientes.
-- [ ] Separar las respuestas en un historial de conversación estructurado por mensaje y autor.
+- [x] Separar cada mensaje de la solicitud en un historial estructurado con fecha, autor y tipo; las notas antiguas siguen legibles.
 - [x] Unificar entrada por menú, comandos de perfil e historial en el router común sin agregar alias.
 - [ ] Revisar visualmente todos los paneles en móvil y escritorio.
 - [x] Inicio web con solicitudes pendientes, errores recientes y actividad reciente sin IDs de usuarios.

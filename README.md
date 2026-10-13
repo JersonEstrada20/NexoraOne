@@ -15,7 +15,8 @@ La guía de variables, builds y recuperación está en [DEPLOY-NORTHFLANK.md](DE
 ## Funciones
 
 - Moderación: enlaces, flood, palabras bloqueadas, captcha, advertencias, silencios, expulsiones, reportes y registros.
-- Administración: reglas, bienvenida, roles, notas, comandos, solicitudes y estadísticas.
+- Administración: reglas, bienvenida, roles, notas, comandos, solicitudes y estadísticas. Cada solicitud conserva una línea de tiempo por mensaje con fecha, autor y tipo; las notas históricas anteriores siguen disponibles.
+- Si Telegram no confirma una entrega, la solicitud queda marcada para revisión. Comprueba el chat del usuario antes de confirmar que llegó o permitir un reintento desde el panel.
 - Comunidad: sorteos, encuestas, niveles, mensajes programados y herramientas para grupos.
 - Economía: perfiles, créditos, recompensas y compras. Los créditos y los saldos en soles se mantienen separados.
 - Multimedia: descargas de TikTok, Instagram, YouTube y Facebook, según disponibilidad de cada plataforma.

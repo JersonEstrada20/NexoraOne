@@ -540,7 +540,15 @@
                 <td><span class="badge {% if req.status == 'resolved' %}ok{% else %}off{% endif %}">{{ req.status }}</span></td>
                 <td>{{ req.cost }}</td>
                 <td>{{ req.payload or '—' }}</td>
-                <td>{{ req.resolved_at or '—' }}<div class="small">{{ req.resolution_note or '' }}</div></td>
+                <td>{{ req.resolved_at or '—' }}
+                  {% if req.message_history %}
+                  <details class="small"><summary>Historial ({{ req.message_history|length }})</summary>
+                    {% for item in req.message_history %}
+                    <div style="white-space:pre-wrap;margin-top:8px"><strong>{{ item.author_label }} · {{ item.kind }}</strong><br>{{ item.at }}<br>{{ item.text }}</div>
+                    {% endfor %}
+                  </details>
+                  {% endif %}
+                </td>
               </tr>
               {% endfor %}
               {% if not user_profile.requests %}<tr><td colspan="6">Sin solicitudes.</td></tr>{% endif %}
@@ -910,8 +918,16 @@
                   <div class="small"><a href="{{ url_for('admin_request_attachment', request_id=req.id) }}" target="_blank">Ver adjunto{% if req.attachment_type %}: {{ req.attachment_type }}{% endif %}</a></div>
                   {% endif %}
                 </td>
-                <td><span class="badge {% if req.status == 'resolved' %}ok{% elif req.status == 'pending' %}off{% else %}pill{% endif %}">{{ req.status }}</span></td>
-                <td>{{ req.resolution_note or '—' }}</td>
+                <td><span class="badge {% if req.status == 'resolved' %}ok{% elif req.status == 'pending' %}off{% else %}pill{% endif %}">{{ req.status }}</span>{% if req.status == 'delivery_uncertain' %}<div class="small">Verifica Telegram antes de reintentar.</div>{% endif %}</td>
+                <td>
+                  {% if req.message_history %}
+                  <details><summary>Historial ({{ req.message_history|length }})</summary>
+                    {% for item in req.message_history %}
+                    <div style="white-space:pre-wrap;margin-top:8px"><strong>{{ item.author_label }} · {{ item.kind }}</strong><br>{{ item.at }}<br>{{ item.text }}</div>
+                    {% endfor %}
+                  </details>
+                  {% else %}—{% endif %}
+                </td>
                 <td>{{ req.resolved_at or '—' }}<div class="small">Admin: {{ req.resolved_by or '—' }}</div></td>
                 <td>
                   <form method="post" action="{{ url_for('admin_request_action') }}">
@@ -921,7 +937,12 @@
                     <input type="hidden" name="rcommand" value="{{ request_command }}">
                     <input type="hidden" name="rfrom" value="{{ request_from }}">
                     <input type="hidden" name="rto" value="{{ request_to }}">
+                    {% if req.status == 'delivery_uncertain' %}
+                    <button type="submit" name="action" value="confirm_delivery" data-confirm="¿Verificaste en el chat que la entrega sí llegó? Esto cerrará la solicitud sin enviar otro mensaje.">Confirmar que llegó</button>
+                    <button class="secondary" type="submit" name="action" value="retry_delivery" data-confirm="Confirma primero que el mensaje no llegó. Esto reabrirá la solicitud para permitir otro envío.">No llegó; permitir reintento</button>
+                    {% else %}
                     <button type="submit" name="action" value="reopen">Reabrir</button>
+                    {% endif %}
                   </form>
                 </td>
               </tr>

@@ -9,8 +9,10 @@ from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+from telegram.error import NetworkError
 from nexora.storage import db_path
 from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json
+from nexora.request_history import append_request_event, latest_request_message
 
 DB_FILE = db_path("requests.db")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -318,7 +320,7 @@ def _delivery_target(row) -> tuple[int, int | None]:
     return chat_id, reply_to
 
 
-async def _send_delivery_message(context: ContextTypes.DEFAULT_TYPE, row, text: str, *, parse_mode: str = "HTML"):
+async def _send_delivery_message(context: ContextTypes.DEFAULT_TYPE, row, text: str, *, parse_mode: str = "HTML", author_id=None, charged=None):
     # Deliver a new message so the response is visible in the conversation.
     # Keep the original receipt instead of silently replacing it.
     chat_id, reply_to = _delivery_target(row)
@@ -326,7 +328,49 @@ async def _send_delivery_message(context: ContextTypes.DEFAULT_TYPE, row, text: 
     if reply_to:
         kwargs["reply_to_message_id"] = reply_to
         kwargs["allow_sending_without_reply"] = True
-    await context.bot.send_message(**kwargs)
+    try:
+        sent = await context.bot.send_message(**kwargs)
+    except NetworkError as exc:
+        _mark_delivery_uncertain(row, text, author_id=author_id, charged=charged)
+        raise RequestDeliveryUncertain(
+            f"Telegram no confirmó la entrega de la solicitud #{row[0]}. Revisa el chat del usuario; luego confirma la entrega o autoriza un reintento desde el panel."
+        ) from exc
+    return sent
+
+
+class RequestDeliveryUncertain(RuntimeError):
+    pass
+
+
+def _mark_delivery_uncertain(row, text: str, author_id=None, charged=None):
+    request_id = int(row[0])
+    conn = db_connect(DB_FILE)
+    try:
+        cur = conn.cursor()
+        current = _get_request_by_id(cur, request_id)
+        if not current or current[5] != "pending":
+            return
+        event_text = text
+        if charged is not None:
+            event_text = f"[cobro_confirmado={int(bool(charged))}] {text}"
+        history = append_request_event(
+            current[13], event_text, author_type="admin", author_id=author_id,
+            kind="delivery_uncertain",
+        )
+        if charged is None:
+            cur.execute(
+                "UPDATE requests SET status = 'delivery_uncertain', resolution_note = ? WHERE id = ? AND status = 'pending'",
+                (history, request_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE requests SET status = 'delivery_uncertain', charged = ?, resolution_note = ? WHERE id = ? AND status = 'pending'",
+                (int(bool(charged)), history, request_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    _sync_request_by_id(request_id)
 
 
 async def _delete_message_silent(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
@@ -532,37 +576,30 @@ def _should_charge(text: str, template_key: str | None = None) -> bool:
     return clean != nodata_text
 
 
-def _update_request_status(cursor, request_id: int, status: str, admin_id: int | None, note: str = ""):
+def _update_request_status(cursor, request_id: int, status: str, admin_id: int | None, note: str = "", *, event: str | None = None):
+    cursor.execute("SELECT resolution_note FROM requests WHERE id = ?", (request_id,))
+    previous_row = cursor.fetchone()
+    previous = previous_row[0] if previous_row else ""
+    history = _append_note(previous, note, author_id=admin_id, event=event or status)
     cursor.execute(
         """
         UPDATE requests
         SET status = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
         WHERE id = ?
         """,
-        (status, now_iso(), admin_id, note, request_id),
+        (status, now_iso(), admin_id, history, request_id),
     )
 
 
-def _append_note(previous: str | None, note: str) -> str:
-    clean_note = (note or "").strip()
-    if not clean_note:
-        return (previous or "").strip()
-    stamped = f"[{now_iso()}] {clean_note}"
-    previous_clean = (previous or "").strip()
-    if not previous_clean:
-        return stamped
-    return f"{previous_clean}\n{stamped}"
+def _append_note(previous: str | None, note: str, *, author_id=None, event: str = "note") -> str:
+    return append_request_event(previous, note, author_id=author_id, kind=event)
 
 
 def _latest_request_note(notes: str | None) -> str:
-    lines = [line.strip() for line in (notes or "").splitlines() if line.strip()]
-    if not lines:
-        return ""
-    latest = lines[-1]
-    return re.sub(r"^\[[^\]]+\]\s*", "", latest).strip()
+    return latest_request_message(notes)
 
 
-def _mark_request_delivery(cursor, request_id: int, admin_id: int | None, note: str, *, charged: int | None = None, resolved: bool = False):
+def _mark_request_delivery(cursor, request_id: int, admin_id: int | None, note: str, *, charged: int | None = None, resolved: bool = False, event: str = "reply"):
     row = _get_request_by_id(cursor, request_id)
     if not row:
         return
@@ -583,7 +620,7 @@ def _mark_request_delivery(cursor, request_id: int, admin_id: int | None, note: 
         resolution_note,
     ) = row[:14]
     final_charged = current_charged if charged is None else charged
-    final_note = _append_note(resolution_note, note)
+    final_note = _append_note(resolution_note, note, author_id=admin_id, event=event)
     if resolved:
         cursor.execute(
             """
@@ -737,7 +774,11 @@ async def _send_request_reply(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
             conn.close()
             return False, str(exc)
 
-    await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, reply_text))
+    try:
+        await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, reply_text), author_id=admin_id, charged=charged)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
     _mark_request_delivery(c, request_id, admin_id, reply_text, charged=int(charged or 0), resolved=False)
     conn.commit()
     conn.close()
@@ -756,8 +797,12 @@ async def _send_request_reply_free(context: ContextTypes.DEFAULT_TYPE, admin_id:
     if status != "pending":
         conn.close()
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
-    await _send_delivery_message(context, row, _user_request_card("RESPUESTA SIN COBRO", request_id, command, reply_text, "No se descontaron créditos."))
-    _mark_request_delivery(c, request_id, admin_id, f"[sin_cobro] {reply_text}", charged=int(charged or 0), resolved=False)
+    try:
+        await _send_delivery_message(context, row, _user_request_card("RESPUESTA SIN COBRO", request_id, command, reply_text, "No se descontaron créditos."), author_id=admin_id)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
+    _mark_request_delivery(c, request_id, admin_id, f"[sin_cobro] {reply_text}", charged=int(charged or 0), resolved=False, event="reply_free")
     conn.commit()
     conn.close()
     await _update_admin_message_markup(context, request_id)
@@ -782,8 +827,12 @@ async def _done_request_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
     body = final_note
     if latest_reply:
         body = f"{latest_reply}\n\n{final_note}"
-    await _send_delivery_message(context, row, _user_request_card("SOLICITUD FINALIZADA", request_id, command, body))
-    _update_request_status(c, request_id, "resolved", admin_id, _append_note(resolution_note, final_note))
+    try:
+        await _send_delivery_message(context, row, _user_request_card("SOLICITUD FINALIZADA", request_id, command, body), author_id=admin_id)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
+    _update_request_status(c, request_id, "resolved", admin_id, final_note, event="completed")
     conn.commit()
     conn.close()
     await _update_admin_message_markup(context, request_id)
@@ -804,8 +853,12 @@ async def _close_request_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
 
     final_note = note or "Tu solicitud fue cerrada por el administrador."
-    await _send_delivery_message(context, row, _user_request_card("SOLICITUD CERRADA", request_id, command, final_note, "No se descontaron créditos."))
-    _update_request_status(c, request_id, "cancelled", admin_id, final_note)
+    try:
+        await _send_delivery_message(context, row, _user_request_card("SOLICITUD CERRADA", request_id, command, final_note, "No se descontaron créditos."), author_id=admin_id)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
+    _update_request_status(c, request_id, "cancelled", admin_id, final_note, event="closed")
     conn.commit()
     conn.close()
     await _update_admin_message_markup(context, request_id)
@@ -826,8 +879,12 @@ async def _fail_request_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
 
     final_note = note or _resolve_template("nodata") or DEFAULT_QUICK_TEMPLATES["nodata"]
-    await _send_delivery_message(context, row, _user_request_card("SOLICITUD FALLIDA", request_id, command, final_note, "No se descontaron créditos."))
-    _update_request_status(c, request_id, "failed", admin_id, final_note)
+    try:
+        await _send_delivery_message(context, row, _user_request_card("SOLICITUD FALLIDA", request_id, command, final_note, "No se descontaron créditos."), author_id=admin_id)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
+    _update_request_status(c, request_id, "failed", admin_id, final_note, event="failed")
     conn.commit()
     conn.close()
     await _update_admin_message_markup(context, request_id)
@@ -857,8 +914,12 @@ async def _send_template_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int
             conn.close()
             return False, str(exc)
 
-    await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, template_text))
-    _mark_request_delivery(c, request_id, admin_id, f"[template:{template_key}] {template_text}", charged=int(charged or 0), resolved=False)
+    try:
+        await _send_delivery_message(context, row, _user_request_card("RESPUESTA", request_id, command, template_text), author_id=admin_id, charged=charged)
+    except RequestDeliveryUncertain as exc:
+        conn.close()
+        return False, str(exc)
+    _mark_request_delivery(c, request_id, admin_id, f"[template:{template_key}] {template_text}", charged=int(charged or 0), resolved=False, event="template_reply")
     conn.commit()
     conn.close()
     await _update_admin_message_markup(context, request_id)
@@ -876,13 +937,17 @@ async def _reopen_request_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: in
     if status == "pending":
         conn.close()
         return False, f"⚠️ La solicitud #{request_id} ya está pendiente."
+    history = _append_note(
+        resolution_note, "Solicitud reabierta por administrador.",
+        author_id=admin_id, event="reopened",
+    )
     c.execute(
         """
         UPDATE requests
-        SET status='pending', resolved_at=NULL, resolved_by=NULL, resolution_note=''
+        SET status='pending', resolved_at=NULL, resolved_by=NULL, resolution_note=?
         WHERE id=?
         """,
-        (request_id,),
+        (history, request_id),
     )
     conn.commit()
     conn.close()
@@ -1100,8 +1165,16 @@ async def forward_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     caption = (update.message.caption or "").strip()
+    note = caption or "[archivo enviado]"
     intro = f"📬 Archivo para tu solicitud #{request_id}\n📌 Comando: /{command}"
     delivered = False
+
+    try:
+        charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+    except RequestChargeError as exc:
+        await update.message.reply_text(str(exc))
+        conn.close()
+        return
 
     try:
         delivery_kwargs = _delivery_kwargs(row)
@@ -1120,8 +1193,16 @@ async def forward_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message.voice:
             await context.bot.send_voice(**delivery_kwargs, voice=update.message.voice.file_id, caption=_build_delivery_caption(intro, caption))
             delivered = True
-    except Exception as exc:
-        await update.message.reply_text(f"❌ No se pudo reenviar el archivo: {exc}")
+    except NetworkError:
+        _mark_delivery_uncertain(row, note, author_id=update.effective_user.id, charged=charged)
+        await update.message.reply_text(
+            f"⚠️ Telegram no confirmó la entrega del archivo para la solicitud #{request_id}. "
+            "Revisa el chat del usuario y concilia el estado en el panel antes de reintentar."
+        )
+        conn.close()
+        return
+    except Exception:
+        await update.message.reply_text("❌ No se pudo reenviar el archivo; revisa el tipo y los permisos del bot.")
         conn.close()
         return
 
@@ -1130,10 +1211,7 @@ async def forward_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    charged = _maybe_charge_request(c, user_id, cost, int(charged or 0))
-
-    note = caption or "[archivo enviado]"
-    _mark_request_delivery(c, request_id, update.effective_user.id, note, charged=int(charged or 0), resolved=False)
+    _mark_request_delivery(c, request_id, update.effective_user.id, note, charged=int(charged or 0), resolved=False, event="attachment")
     conn.commit()
     await update.message.reply_text(f"Archivo enviado a {_target_label(username, user_id)} para la solicitud #{request_id} ✅ Sigue abierta; usa /done {request_id} cuando termines.")
     conn.close()

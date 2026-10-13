@@ -1,9 +1,16 @@
 import unittest
+import tempfile
+import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from telegram.error import NetworkError
+from nexora.comandos import admin_requests
+from nexora.request_history import parse_request_history
 
 from nexora.comandos.admin_requests import (
     RequestChargeError,
+    RequestDeliveryUncertain,
     _maybe_charge_request,
     _send_delivery_message,
 )
@@ -42,6 +49,58 @@ class RequestDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.side_effect = RuntimeError('test failure')
         with self.assertRaisesRegex(RuntimeError, 'test failure'):
             await _send_delivery_message(SimpleNamespace(bot=bot), [1, 123], 'Respuesta')
+
+
+class UncertainDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def _create_request(self, db_path):
+        admin_requests.init_db()
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO requests(user_id,command,payload,status,cost,created_at) VALUES(?,?,?,?,?,?)",
+            (123, "lookup", "query", "pending", 2, "2026-10-13T10:00:00Z"),
+        )
+        request_id = cur.lastrowid
+        conn.commit()
+        row = admin_requests._get_request_by_id(cur, request_id)
+        conn.close()
+        return request_id, row
+
+    def test_uncertain_delivery_blocks_request_and_records_message_and_charge(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            admin_requests, "DB_FILE", str(Path(directory) / "requests.db")
+        ):
+            request_id, row = self._create_request(admin_requests.DB_FILE)
+
+            admin_requests._mark_delivery_uncertain(row, "mensaje enviado", author_id=99, charged=1)
+
+            conn = sqlite3.connect(admin_requests.DB_FILE)
+            status, charged, history = conn.execute(
+                "SELECT status, charged, resolution_note FROM requests WHERE id = ?", (request_id,)
+            ).fetchone()
+            conn.close()
+            self.assertEqual("delivery_uncertain", status)
+            self.assertEqual(1, charged)
+            events = parse_request_history(history)
+            self.assertEqual("delivery_uncertain", events[-1]["kind"])
+            self.assertIn("[cobro_confirmado=1]", events[-1]["text"])
+
+    async def test_network_error_is_recorded_before_it_reaches_admin(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            admin_requests, "DB_FILE", str(Path(directory) / "requests.db")
+        ):
+            request_id, row = self._create_request(admin_requests.DB_FILE)
+            bot = AsyncMock()
+            bot.send_message.side_effect = NetworkError("connection reset")
+            with self.assertRaises(RequestDeliveryUncertain):
+                await admin_requests._send_delivery_message(
+                    SimpleNamespace(bot=bot), row, "respuesta", author_id=99, charged=1
+                )
+
+            conn = sqlite3.connect(admin_requests.DB_FILE)
+            status = conn.execute("SELECT status FROM requests WHERE id = ?", (request_id,)).fetchone()[0]
+            conn.close()
+            self.assertEqual("delivery_uncertain", status)
 
 
 class RequestChargeTests(unittest.TestCase):

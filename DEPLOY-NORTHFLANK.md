@@ -51,6 +51,21 @@ La web también puede usar `BOT_TOKEN` para algunas integraciones de Telegram. D
 
 Un build verde confirma que la imagen se creó; no confirma por sí solo la conexión de los dos servicios o el funcionamiento de cada comando.
 
+### Bloquear despliegues si fallan las pruebas
+
+El workflow `.github/workflows/tests.yml` ejecuta la suite Python y las pruebas JavaScript al hacer push y al abrir un pull request. Northflank CI/CD, por separado, construye y despliega la rama conectada; ejecutar GitHub Actions no bloquea ese disparador automáticamente.
+
+Para que solo lleguen a `main` cambios con pruebas aprobadas:
+
+1. En GitHub, abre **Settings → Branches** y crea una regla para `main`.
+2. Activa **Require status checks to pass before merging** y selecciona el check `Tests / test` después de que aparezca en una ejecución reciente.
+3. Activa **Require a pull request before merging**. Los cambios deben entrar por PR; los pushes directos a `main` dejarán de funcionar.
+4. Conserva en Northflank CI/CD el build y deploy automático de `main`. El merge solo actualizará la rama cuando el check requerido haya terminado correctamente.
+
+GitHub puede exigir checks antes de permitir cambios en una rama protegida. Northflank también permite workflows por evento de check suite, pero esa señal no espera a todos los checks de un commit; por eso no se usa como único bloqueo de producción.
+
+Referencias: [protección de ramas en GitHub](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) y [workflows de Northflank](https://northflank.com/docs/v1/application/release/configure-workflows).
+
 ## Inicializar una base Turso nueva
 
 La base de producción ya existe y está inicializada. **No ejecutes estos pasos sobre la base actual ni importes datos antiguos.** Para una base nueva y vacía:

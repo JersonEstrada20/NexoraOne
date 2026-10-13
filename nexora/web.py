@@ -21,10 +21,12 @@ import traceback
 import shutil
 from urllib import parse as _urlparse
 from urllib import request as _urlreq
+from urllib.error import HTTPError, URLError
 from flask_cors import CORS, cross_origin
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 from nexora.storage import db_path, get_data_dir
+from nexora.request_history import append_request_event, parse_request_history
 
 DB_PATH = db_path("multiplataforma.db")
 HIST_DB_PATH = db_path("historial.db")
@@ -233,9 +235,9 @@ def configured_admin_ids() -> set[str]:
     return {str(value).strip() for value in values if str(value).strip()}
 
 
-def send_telegram_message_sync(chat_id: str | int, text: str) -> bool:
+def send_telegram_message_sync_detailed(chat_id: str | int, text: str) -> str:
     if not TELEGRAM_TOKEN or not chat_id or not text:
-        return False
+        return "failed"
     payload = _urlparse.urlencode(
         {
             "chat_id": str(chat_id),
@@ -252,9 +254,17 @@ def send_telegram_message_sync(chat_id: str | int, text: str) -> bool:
     )
     try:
         with _urlreq.urlopen(req, timeout=8) as resp:
-            return (resp.getcode() or 0) == 200
+            return "sent" if (resp.getcode() or 0) == 200 else "failed"
+    except HTTPError as exc:
+        return "uncertain" if exc.code >= 500 else "failed"
+    except (URLError, TimeoutError, ConnectionError):
+        return "uncertain"
     except Exception:
-        return False
+        return "failed"
+
+
+def send_telegram_message_sync(chat_id: str | int, text: str) -> bool:
+    return send_telegram_message_sync_detailed(chat_id, text) == "sent"
 
 # -------------------------
 # Utils
@@ -1576,6 +1586,19 @@ def get_request_items(status: str | None = None, limit: int = 50):
         conn.close()
     except Exception:
         items = []
+    return _attach_request_histories(items)
+
+
+def _attach_request_histories(items: list[dict]) -> list[dict]:
+    for item in items:
+        item["message_history"] = parse_request_history(
+            item.get("resolution_note"),
+            request_text=item.get("payload") or "",
+            request_created_at=item.get("created_at") or "",
+            user_id=item.get("user_id"),
+            username=item.get("username") or "",
+            resolved_by=item.get("resolved_by"),
+        )
     return items
 
 
@@ -1642,7 +1665,7 @@ def get_request_items_filtered(
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return rows
+        return _attach_request_histories(rows)
     except Exception:
         return []
 
@@ -1687,7 +1710,7 @@ def send_request_template_from_panel(request_id: int, template_key: str, resolve
         init_requests_db()
         conn = get_conn(REQUESTS_DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT id, user_id, command, status FROM requests WHERE id = ?", (request_id,))
+        cur.execute("SELECT id, user_id, command, status, resolution_note FROM requests WHERE id = ?", (request_id,))
         row = cur.fetchone()
         if not row:
             conn.close()
@@ -1701,11 +1724,28 @@ def send_request_template_from_panel(request_id: int, template_key: str, resolve
             f"Comando: <code>/{html_escape(row[2] or '')}</code>\n\n"
             f"{html_escape(text)}"
         )
-        sent = send_telegram_message_sync(row[1], user_text)
-        if not sent:
+        delivery = send_telegram_message_sync_detailed(row[1], user_text)
+        if delivery == "uncertain":
+            history = append_request_event(
+                row[4], user_text, author_type="admin",
+                author_id=session.get("panel_user") or PANEL_USER,
+                kind="delivery_uncertain",
+            )
+            cur.execute(
+                "UPDATE requests SET status = 'delivery_uncertain', resolution_note = ? WHERE id = ? AND status = 'pending'",
+                (history, request_id),
+            )
+            conn.commit()
+            conn.close()
+            return False, "Telegram no confirmó la entrega. Verifica el chat antes de confirmar o autorizar un reintento."
+        if delivery != "sent":
             conn.close()
             return False, "No se pudo enviar el mensaje al usuario."
-        note = f"[template:{template_key}] {text}"
+        note = append_request_event(
+            row[4], f"[template:{template_key}] {text}",
+            author_type="admin", author_id=session.get("panel_user") or PANEL_USER,
+            kind="template_reply",
+        )
         if resolve:
             cur.execute(
                 """
@@ -1791,10 +1831,11 @@ def get_user_activity(user_id: str, limit: int = 60):
             "date": row.get("fecha_canje") or "",
         })
     for row in get_user_request_items(user_id, limit=30):
+        latest_event = row.get("message_history", [])[-1] if row.get("message_history") else None
         activity.append({
             "type": "Solicitud",
             "label": f"#{row.get('id')} /{row.get('command') or '—'}",
-            "detail": f"{row.get('status') or '—'} · {row.get('resolution_note') or row.get('payload') or '—'}",
+            "detail": f"{row.get('status') or '—'} · {(latest_event or {}).get('text') or row.get('payload') or '—'}",
             "date": row.get("resolved_at") or row.get("created_at") or "",
         })
     activity.sort(key=lambda item: item.get("date") or "", reverse=True)
@@ -1910,6 +1951,8 @@ REQUEST_PANEL_ACTIONS = {
     "close": ("cancelled", "Solicitud cerrada desde panel."),
     "fail": ("failed", "Solicitud marcada fallida desde panel."),
     "reopen": ("pending", "Solicitud reabierta desde panel."),
+    "confirm_delivery": ("resolved", "Entrega ambigua confirmada manualmente como recibida."),
+    "retry_delivery": ("pending", "Entrega ambigua verificada como no recibida; reintento autorizado."),
 }
 
 
@@ -1923,15 +1966,18 @@ def update_request_status_from_panel(request_id: int, action: str, note: str = "
         init_requests_db()
         conn = get_conn(REQUESTS_DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT id, user_id, command, status FROM requests WHERE id = ?", (request_id,))
+        cur.execute("SELECT id, user_id, command, status, resolution_note FROM requests WHERE id = ?", (request_id,))
         row = cur.fetchone()
         if not row:
             conn.close()
             return False, f"Solicitud #{request_id} no encontrada."
         resolved_at = None if new_status == "pending" else now_iso()
         resolved_by = "" if new_status == "pending" else (session.get("panel_user") or PANEL_USER)
-        if new_status == "pending":
-            note = ""
+        note = append_request_event(
+            row[4], note,
+            author_type="admin", author_id=session.get("panel_user") or PANEL_USER,
+            kind=action,
+        )
         cur.execute(
             """
             UPDATE requests
@@ -1943,7 +1989,7 @@ def update_request_status_from_panel(request_id: int, action: str, note: str = "
         conn.commit()
         conn.close()
         log_audit_event("request.action", str(request_id), f"{action} => {new_status}; note={note}")
-        if new_status != "pending" and row[1]:
+        if new_status != "pending" and row[1] and action != "confirm_delivery":
             labels = {
                 "resolved": "resuelta",
                 "cancelled": "cerrada",
@@ -2293,7 +2339,7 @@ def get_user_request_items(user_id: str, limit: int = 80):
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return rows
+        return _attach_request_histories(rows)
     except Exception:
         return []
 
@@ -2410,7 +2456,7 @@ def get_global_search_results(q: str, limit: int = 25):
             """,
             (like, like, like, like, like, like, limit),
         )
-        results["requests"] = [dict(row) for row in cur.fetchall()]
+        results["requests"] = _attach_request_histories([dict(row) for row in cur.fetchall()])
         conn.close()
     except Exception:
         pass
