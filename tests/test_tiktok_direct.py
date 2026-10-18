@@ -1,9 +1,32 @@
 import unittest
+from email.message import Message as Headers
+from io import BytesIO
 from unittest.mock import AsyncMock, patch
 from app.handlers import media
 
 
 class TikTokDirectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolved_cdn_video_is_downloaded_directly(self):
+        url = "https://v.tiktokcdn.com/video.mp4"
+
+        class FakeResponse(BytesIO):
+            headers = Headers()
+
+            def geturl(self):
+                return url
+
+        response = FakeResponse(b"video-bytes")
+        response.headers["Content-Type"] = "video/mp4"
+        response.headers["Content-Length"] = str(len(b"video-bytes"))
+
+        with patch.object(media, "urlopen", return_value=response):
+            path, work, info = await media._download_process(url, job_id="tiktok-test")
+        try:
+            self.assertEqual(path.read_bytes(), b"video-bytes")
+            self.assertEqual(info["title"], "Video de TikTok")
+        finally:
+            media.shutil.rmtree(work, ignore_errors=True)
+
     async def test_video_starts_without_confirmation(self):
         message = AsyncMock()
         status = message.reply.return_value
