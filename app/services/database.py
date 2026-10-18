@@ -13,6 +13,10 @@ from app.config import (
 
 async def init_db():
     if await asyncio.to_thread(initialized_remote):
+        # Additive schema changes are safe to apply to the shared Turso database.
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_group_features_schema(db)
+            await db.commit()
         return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -39,6 +43,13 @@ async def init_db():
             weekly_stats_enabled INTEGER DEFAULT 0,
             required_channel TEXT,
             auto_delete_seconds INTEGER DEFAULT 0,
+            night_mode_enabled INTEGER DEFAULT 0,
+            night_mode_start TEXT DEFAULT '22:00',
+            night_mode_end TEXT DEFAULT '07:00',
+            night_mode_timezone TEXT DEFAULT 'America/Santiago',
+            antiraid_enabled INTEGER DEFAULT 0,
+            raid_join_threshold INTEGER DEFAULT 8,
+            raid_window_seconds INTEGER DEFAULT 30,
             language TEXT DEFAULT 'es'
         )
         """)
@@ -157,6 +168,7 @@ async def init_db():
         await _run_safe_alter(db, "ALTER TABLE group_settings ADD COLUMN required_channel TEXT")
         await _run_safe_alter(db, "ALTER TABLE group_settings ADD COLUMN auto_delete_seconds INTEGER DEFAULT 0")
         await _run_safe_alter(db, "ALTER TABLE group_settings ADD COLUMN language TEXT DEFAULT 'es'")
+        await _ensure_group_features_schema(db)
         await db.execute("""CREATE TABLE IF NOT EXISTS rules_acceptance (
             chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, accepted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(chat_id, user_id))""")
@@ -198,6 +210,12 @@ async def init_db():
             chat_id INTEGER NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
             created_by INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(chat_id, name)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS group_filters (
+            chat_id INTEGER NOT NULL, trigger TEXT NOT NULL,
+            match_type TEXT NOT NULL DEFAULT 'contains', response TEXT NOT NULL,
+            created_by INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(chat_id, trigger, match_type)
         )""")
         await db.execute("""CREATE TABLE IF NOT EXISTS content_locks (
             chat_id INTEGER NOT NULL, content_type TEXT NOT NULL,
@@ -258,6 +276,25 @@ async def init_db():
         await _run_safe_alter(db, "ALTER TABLE download_history ADD COLUMN document INTEGER DEFAULT 0")
 
         await db.commit()
+
+
+async def _ensure_group_features_schema(db):
+    for statement in (
+        "ALTER TABLE group_settings ADD COLUMN night_mode_enabled INTEGER DEFAULT 0",
+        "ALTER TABLE group_settings ADD COLUMN night_mode_start TEXT DEFAULT '22:00'",
+        "ALTER TABLE group_settings ADD COLUMN night_mode_end TEXT DEFAULT '07:00'",
+        "ALTER TABLE group_settings ADD COLUMN night_mode_timezone TEXT DEFAULT 'America/Santiago'",
+        "ALTER TABLE group_settings ADD COLUMN antiraid_enabled INTEGER DEFAULT 0",
+        "ALTER TABLE group_settings ADD COLUMN raid_join_threshold INTEGER DEFAULT 8",
+        "ALTER TABLE group_settings ADD COLUMN raid_window_seconds INTEGER DEFAULT 30",
+    ):
+        await _run_safe_alter(db, statement)
+    await db.execute("""CREATE TABLE IF NOT EXISTS group_filters (
+        chat_id INTEGER NOT NULL, trigger TEXT NOT NULL,
+        match_type TEXT NOT NULL DEFAULT 'contains', response TEXT NOT NULL,
+        created_by INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(chat_id, trigger, match_type)
+    )""")
 
 
 async def _run_safe_alter(db, sql: str):
@@ -328,6 +365,13 @@ async def get_settings(chat_id: int):
                 weekly_stats_enabled,
                 required_channel,
                 auto_delete_seconds,
+                night_mode_enabled,
+                night_mode_start,
+                night_mode_end,
+                night_mode_timezone,
+                antiraid_enabled,
+                raid_join_threshold,
+                raid_window_seconds,
                 language
             FROM group_settings
             WHERE chat_id = ?
@@ -356,8 +400,35 @@ async def get_settings(chat_id: int):
             "weekly_stats_enabled": bool(row[18]),
             "required_channel": row[19],
             "auto_delete_seconds": int(row[20] or 0),
-            "language": row[21] or "es",
+            "night_mode_enabled": bool(row[21]),
+            "night_mode_start": row[22] or "22:00",
+            "night_mode_end": row[23] or "07:00",
+            "night_mode_timezone": row[24] or "America/Santiago",
+            "antiraid_enabled": bool(row[25]),
+            "raid_join_threshold": int(row[26] or 8),
+            "raid_window_seconds": int(row[27] or 30),
+            "language": row[28] or "es",
         }
+
+
+async def set_night_mode(chat_id: int, enabled: bool, start: str = "22:00", end: str = "07:00", timezone: str = "America/Santiago"):
+    await ensure_group(chat_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE group_settings SET night_mode_enabled=?,night_mode_start=?,night_mode_end=?,night_mode_timezone=? WHERE chat_id=?",
+            (1 if enabled else 0, start, end, timezone, chat_id),
+        )
+        await db.commit()
+
+
+async def set_antiraid(chat_id: int, enabled: bool, threshold: int = 8, window_seconds: int = 30):
+    await ensure_group(chat_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE group_settings SET antiraid_enabled=?,raid_join_threshold=?,raid_window_seconds=? WHERE chat_id=?",
+            (1 if enabled else 0, threshold, window_seconds, chat_id),
+        )
+        await db.commit()
 
 
 async def set_slow_mode(chat_id: int, seconds: int):

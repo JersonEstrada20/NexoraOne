@@ -45,6 +45,7 @@ from app.services.database import (
     get_open_tickets,
     close_ticket,
     set_approval_enabled,
+    set_antiraid,
 )
 from app.services.admin_logs import send_admin_log
 from app.services.group_tools import get_locks, list_whitelist, set_lock
@@ -301,6 +302,8 @@ def panel_keyboard(settings: dict, section: str = "home"):
         builder.button(text=f"⚡ Antiflood: {'ON' if settings['antiflood'] else 'OFF'}", callback_data="panel:toggle_antiflood")
         builder.button(text=f"🛡 Captcha: {'ON' if settings['captcha_enabled'] else 'OFF'}", callback_data="panel:toggle_captcha")
         builder.button(text=f"👤 Aprobación manual: {'ON' if settings.get('approval_enabled') else 'OFF'}", callback_data="panel:toggle_approval")
+        builder.button(text=f"🚨 Anti-raid: {'ON' if settings.get('antiraid_enabled') else 'OFF'}", callback_data="panel:toggle_antiraid")
+        builder.button(text="🌙 Modo nocturno", callback_data="panel:how_night")
         builder.button(text="↩️ Volver al panel", callback_data="panel:home")
         builder.button(text="🏠 Menú principal", callback_data="mainmenu:home")
         builder.adjust(2)
@@ -352,6 +355,8 @@ def panel_home_text(settings: dict, bad_words: list[str]) -> str:
         f"🔗 Anti-link: <b>{'ON' if settings['anti_link'] else 'OFF'}</b>\n"
         f"⚡ Antiflood: <b>{'ON' if settings['antiflood'] else 'OFF'}</b>\n"
         f"🛡 Captcha: <b>{'ON' if settings['captcha_enabled'] else 'OFF'}</b>\n"
+        f"🚨 Anti-raid: <b>{'ON' if settings.get('antiraid_enabled') else 'OFF'}</b>\n"
+        f"🌙 Modo nocturno: <b>{'ON' if settings.get('night_mode_enabled') else 'OFF'}</b>\n"
         f"⚠️ Warns para auto-mute: <b>{settings['warn_limit']}</b>\n"
         f"🧹 Palabras bloqueadas: <b>{len(bad_words)}</b>\n\n"
         "Elige una sección para administrar el grupo."
@@ -1096,6 +1101,37 @@ async def panel_callbacks(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML", reply_markup=panel_keyboard(settings, "security"))
         await callback.answer("Aprobación manual actualizada"); return
 
+    if action == "toggle_antiraid":
+        enabled = not settings.get("antiraid_enabled", False)
+        await set_antiraid(
+            chat_id, enabled,
+            settings.get("raid_join_threshold", 8),
+            settings.get("raid_window_seconds", 30),
+        )
+        settings = await get_settings(chat_id)
+        summary = (
+            f"🚨 Anti-raid activo: pedirá CAPTCHA si entran {settings['raid_join_threshold']} personas "
+            f"en {settings['raid_window_seconds']} segundos."
+            if enabled else "🚨 Anti-raid desactivado."
+        )
+        await callback.message.edit_text(
+            "🛡 <b>Seguridad</b>\n\n" + summary,
+            parse_mode="HTML", reply_markup=panel_keyboard(settings, "security"),
+        )
+        await callback.answer("Anti-raid activado" if enabled else "Anti-raid desactivado")
+        return
+
+    if action == "how_night":
+        await callback.message.edit_text(
+            "🌙 <b>Modo nocturno</b>\n\n"
+            "Configúralo en el grupo con <code>/noche on 22:00 07:00 America/Santiago</code>. "
+            "Puedes usar otra zona horaria IANA. Para apagarlo: <code>/noche off</code>; para ver el horario: <code>/noche</code>.\n\n"
+            "Durante ese horario se eliminan los mensajes de miembros que no sean administradores.",
+            parse_mode="HTML", reply_markup=panel_keyboard(settings, "security"),
+        )
+        await callback.answer()
+        return
+
     if action == "how_poll":
         await callback.message.edit_text(
             "📊 <b>Crear encuesta</b>\n\n"
@@ -1110,7 +1146,7 @@ async def panel_callbacks(callback: CallbackQuery, state: FSMContext):
         return
 
     section_texts = {
-        "security": "🛡 <b>Seguridad</b>\n\nActiva o desactiva las protecciones del grupo.",
+        "security": "🛡 <b>Seguridad</b>\n\nActiva o desactiva las protecciones del grupo. Anti-raid pide CAPTCHA durante una oleada. El modo nocturno elimina mensajes de miembros dentro del horario configurado.",
         "content": "👋 <b>Bienvenida y reglas</b>\n\nConsulta una vista previa o mira cómo cambiar los textos.",
         "sanctions": (
             "🚨 <b>Sanciones</b>\n\n"

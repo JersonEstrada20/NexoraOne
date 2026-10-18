@@ -33,13 +33,45 @@ from app.services.filters import (
 )
 from app.services.admin_logs import send_admin_log
 from app.services.templates import render_group_template
-from app.services.group_tools import has_allowed_link, is_user_whitelisted
+from app.services.group_tools import find_filter, has_allowed_link, is_user_whitelisted, night_mode_active
 
 router = Router()
 
 FLOOD_CACHE = defaultdict(list)
 REPEAT_CACHE = defaultdict(list)
 SLOW_MODE_CACHE = {}
+JOIN_CACHE = defaultdict(list)
+RAID_ACTIVE_UNTIL = {}
+FILTER_COOLDOWNS = {}
+CUSTOM_COMMAND_COPY_PREFIX = "__nexora_copy_message__:"
+
+
+async def _reply_to_filter(message: Message, text: str) -> bool:
+    match = await find_filter(message.chat.id, text)
+    if not match:
+        return False
+    trigger, _match_type, response = match
+    now = time()
+    key = (message.chat.id, message.from_user.id, trigger)
+    if now - FILTER_COOLDOWNS.get(key, 0) < 5:
+        return True
+    FILTER_COOLDOWNS[key] = now
+    if len(FILTER_COOLDOWNS) > 5000:
+        for old_key, last in list(FILTER_COOLDOWNS.items()):
+            if now - last > 30:
+                FILTER_COOLDOWNS.pop(old_key, None)
+    if response.startswith(CUSTOM_COMMAND_COPY_PREFIX):
+        try:
+            source_id = int(response[len(CUSTOM_COMMAND_COPY_PREFIX):])
+            await message.bot.copy_message(message.chat.id, message.chat.id, source_id)
+        except (TypeError, ValueError):
+            await message.answer("⚠️ La respuesta multimedia guardada ya no es válida. Configúrala otra vez.")
+        except Exception:
+            await message.answer("⚠️ No pude copiar la respuesta; comprueba que el mensaje original siga disponible.")
+        return True
+    rendered = await render_group_template(message.bot, message.chat, message.from_user, response)
+    await message.answer(rendered)
+    return True
 
 
 def normalize_spam_text(text: str) -> str:
@@ -101,6 +133,34 @@ async def on_user_join(event: ChatMemberUpdated):
     user = event.new_chat_member.user
     settings = await get_settings(event.chat.id)
 
+    now = time()
+    if settings.get("antiraid_enabled") and not user.is_bot:
+        arrivals = JOIN_CACHE[event.chat.id]
+        arrivals[:] = [joined_at for joined_at in arrivals if now - joined_at <= settings["raid_window_seconds"]]
+        arrivals.append(now)
+        if len(arrivals) > 100:
+            del arrivals[:-100]
+        threshold = settings["raid_join_threshold"]
+        if len(arrivals) >= threshold and RAID_ACTIVE_UNTIL.get(event.chat.id, 0) <= now:
+            RAID_ACTIVE_UNTIL[event.chat.id] = now + 120
+            await add_log(
+                event.chat.id,
+                "ANTI_RAID_TRIGGERED",
+                user_id=user.id,
+                reason=f"joins={len(arrivals)} in {settings['raid_window_seconds']}s",
+            )
+            try:
+                await event.bot.send_message(
+                    event.chat.id,
+                    f"🚨 <b>Posible oleada detectada</b>\n"
+                    f"Entraron {len(arrivals)} personas en {settings['raid_window_seconds']} s. "
+                    "Durante 2 minutos, los nuevos miembros deberán resolver un CAPTCHA.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+    raid_active = RAID_ACTIVE_UNTIL.get(event.chat.id, 0) > now
+
     if settings.get("approval_enabled"):
         try:
             await event.bot.restrict_chat_member(event.chat.id, user.id, permissions=ChatPermissions(can_send_messages=False))
@@ -116,7 +176,7 @@ async def on_user_join(event: ChatMemberUpdated):
         await add_log(event.chat.id, "MEMBER_PENDING_APPROVAL", user_id=user.id)
         return
 
-    if settings["captcha_enabled"]:
+    if settings["captcha_enabled"] or raid_active:
         question, answer, options = generate_captcha()
         expires_at = future_iso_minutes(DEFAULT_CAPTCHA_TIMEOUT_MINUTES)
 
@@ -151,6 +211,7 @@ async def on_user_join(event: ChatMemberUpdated):
                 f"Resuelve este captcha tocando un botón:\n"
                 f"👉 {question}\n\n"
                 f"Tienes {DEFAULT_CAPTCHA_TIMEOUT_MINUTES} minutos."
+                + (" Esta verificación se activó por una oleada de ingresos." if raid_active and not settings["captcha_enabled"] else "")
             ),
             reply_markup=captcha_keyboard(user.id, options)
         )
@@ -276,14 +337,22 @@ async def moderate_messages(message: Message):
             f"🎉 {message.from_user.full_name} subió al <b>nivel {level}</b>!"
             + (f"\n🎖 Nuevo rol: <b>{role}</b>" if role else ""), parse_mode="HTML")
 
+    text = message.text or message.caption or ""
+    settings = await get_settings(message.chat.id)
+
     if await is_admin(message.bot, message.chat.id, message.from_user.id):
+        await _reply_to_filter(message, text)
         return
 
     if await is_user_whitelisted(message.chat.id, message.from_user.id):
         return
 
-    text = message.text or message.caption or ""
-    settings = await get_settings(message.chat.id)
+    if night_mode_active(settings):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
 
     slow_seconds = settings.get("slow_mode_seconds", 0)
     if slow_seconds:
@@ -564,3 +633,7 @@ async def moderate_messages(message: Message):
                 f"♻️ {message.from_user.full_name}, evita repetir el mismo mensaje.\n"
                 f"Warns actuales: {warns}"
             )
+            return
+
+    if text:
+        await _reply_to_filter(message, text)

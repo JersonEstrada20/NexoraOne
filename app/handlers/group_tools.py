@@ -6,11 +6,13 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.services.filters import is_admin
-from app.services.database import set_slow_mode
+from app.services.database import get_settings, set_antiraid, set_night_mode, set_slow_mode
 from app.services.group_tools import (
-    delete_text, get_locks, get_text, is_user_whitelisted, list_names,
-    list_whitelist, normalize_name, set_lock, set_whitelist, upsert_text,
+    delete_filter, delete_text, find_filter, get_locks, get_text,
+    is_user_whitelisted, list_filters, list_names, list_whitelist,
+    normalize_name, set_lock, set_whitelist, upsert_filter, upsert_text,
 )
+from app.services.templates import render_group_template
 
 router = Router()
 _COPY_COMMAND_PREFIX = "__nexora_copy_message__:"
@@ -31,6 +33,24 @@ async def _admin(message: Message) -> bool:
         await message.answer("🔒 Solo los administradores pueden usar este comando.")
         return False
     return True
+
+
+async def _send_configured_reply(message: Message, content: str):
+    if content.startswith(_COPY_COMMAND_PREFIX):
+        try:
+            source_id = int(content[len(_COPY_COMMAND_PREFIX):])
+            await message.bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=message.chat.id,
+                message_id=source_id,
+            )
+        except (TypeError, ValueError):
+            await message.answer("⚠️ La respuesta multimedia guardada ya no es válida. Configúrala otra vez.")
+        except Exception:
+            await message.answer("⚠️ No pude copiar esa respuesta; comprueba que el mensaje original siga disponible.")
+        return
+    rendered = await render_group_template(message.bot, message.chat, message.from_user, content)
+    await message.answer(rendered)
 
 
 def _args(message: Message):
@@ -102,9 +122,9 @@ async def set_command(message: Message):
         await message.answer(
             "🧩 <b>Cómo crear un comando</b>\n\n"
             "Texto: <code>/setcmd tratoadmin Aquí va el mensaje</code>\n"
-            "Multimedia o formato: responde al mensaje que quieras guardar con "
+            "Multimedia (foto, video, GIF, audio, documento o sticker): responde al mensaje que quieras guardar con "
             "<code>/setcmd tratoadmin</code>.\n\n"
-            "El mensaje original debe quedarse en el grupo para que el bot pueda copiarlo.\n\n"
+            "El mensaje original debe quedarse en el grupo para que el bot pueda copiarlo. Puedes usar {name}, {username}, {group}, {members} y {id} en respuestas de texto.\n\n"
             "Después, cualquiera del grupo puede usar <code>/tratoadmin</code>. "
             "Administra la lista con /mycmds y elimina uno con /delcmd nombre.",
             parse_mode="HTML",
@@ -127,6 +147,73 @@ async def commands(message: Message):
     names = await list_names("custom_commands", message.chat.id)
     text = "\n".join(f"• <code>/{escape(name)}</code>" for name in names)
     await message.answer("⚡ <b>Comandos personalizados</b>\n\n" + (text or "Todavía no hay comandos."), parse_mode="HTML")
+
+
+@router.message(Command("filter"))
+async def set_filter(message: Message):
+    if not await _admin(message):
+        return
+    raw = (message.text or "").strip()
+    command_body = re.sub(r"^/filter(?:@\w+)?\s*", "", raw, count=1, flags=re.IGNORECASE)
+    trigger_match = re.match(r'(?:(exact|prefix):)?(?:"([^"]+)"|(\S+))(?=\s|$)', command_body, re.IGNORECASE)
+    if not trigger_match:
+        await message.answer(
+            "🧩 <b>Respuestas automáticas</b>\n\n"
+            "<code>/filter palabra respuesta</code> busca dentro del mensaje.\n"
+            "<code>/filter &quot;hola mundo&quot; respuesta</code> admite frases.\n"
+            "<code>/filter exact:hola respuesta</code> exige que el mensaje sea igual.\n"
+            "<code>/filter prefix:/ayuda respuesta</code> coincide al inicio.\n"
+            "También puedes responder una foto, video, GIF, audio o sticker con "
+            "<code>/filter palabra</code>.\n\n"
+            "Lista: /filters · Quitar: /stop palabra",
+            parse_mode="HTML",
+        )
+        return
+
+    match_type = (trigger_match.group(1) or "contains").lower()
+    trigger = " ".join((trigger_match.group(2) or trigger_match.group(3) or "").casefold().split())
+    response = command_body[trigger_match.end():].strip() or None
+    if not trigger or len(trigger) > 64:
+        await message.answer("⚠️ La frase debe tener entre 1 y 64 caracteres.")
+        return
+    if message.reply_to_message and not response:
+        response = f"{_COPY_COMMAND_PREFIX}{message.reply_to_message.message_id}"
+    if not response:
+        await message.answer("Falta la respuesta. Añádela al comando o responde a un mensaje multimedia.")
+        return
+    if len(response) > 4096 and not response.startswith(_COPY_COMMAND_PREFIX):
+        await message.answer("La respuesta de texto no puede superar 4096 caracteres.")
+        return
+    await upsert_filter(message.chat.id, trigger, match_type, response, message.from_user.id)
+    await message.answer(
+        f"✅ Respuesta guardada para <code>{escape(trigger)}</code> ({match_type}). "
+        "Revísala con /filters; elimínala con /stop.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("filters"))
+async def show_filters(message: Message):
+    rows = await list_filters(message.chat.id)
+    if not rows:
+        await message.answer("🧩 No hay respuestas automáticas configuradas. Usa /filter para crear una.")
+        return
+    lines = [f"• <code>{escape(trigger)}</code> — {match_type}" for trigger, match_type, _ in rows]
+    await message.answer("🧩 <b>Respuestas automáticas</b>\n\n" + "\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("stop"))
+async def remove_filter(message: Message):
+    if not await _admin(message):
+        return
+    raw = (message.text or "").strip()
+    trigger = re.sub(r"^/stop(?:@\w+)?\s*", "", raw, count=1, flags=re.IGNORECASE)
+    trigger = " ".join(trigger.strip().strip('"').casefold().split())
+    if not trigger:
+        await message.answer("Uso: <code>/stop palabra o frase</code>.", parse_mode="HTML")
+        return
+    removed = await delete_filter(message.chat.id, trigger)
+    await message.answer("✅ Respuesta eliminada." if removed else "No encontré una respuesta con esa frase.")
 
 
 @router.message(Command("pin"))
@@ -169,6 +256,93 @@ async def slowmode(message: Message):
         await message.answer("Valores permitidos: 0, 10, 30, 60, 300, 900 o 3600 segundos."); return
     await set_slow_mode(message.chat.id, seconds)
     await message.answer("⚡ Modo lento apagado." if seconds == 0 else f"🐢 Modo lento: un mensaje cada {seconds} segundos.")
+
+
+@router.message(Command("noche", "nightmode"))
+async def night_mode(message: Message):
+    if not await _admin(message):
+        return
+    parts = (message.text or "").split()
+    settings = await get_settings(message.chat.id)
+    if len(parts) == 1:
+        state = "activado" if settings["night_mode_enabled"] else "desactivado"
+        await message.answer(
+            f"🌙 Modo nocturno {state}. Horario: {settings['night_mode_start']}–{settings['night_mode_end']} "
+            f"({escape(settings['night_mode_timezone'])}).\n"
+            "Durante ese horario se eliminan mensajes de miembros que no sean admins.\n\n"
+            "Configurar: <code>/noche on 22:00 07:00 America/Santiago</code>\n"
+            "Apagar: <code>/noche off</code>",
+            parse_mode="HTML",
+        )
+        return
+    if parts[1].lower() in {"off", "apagar"}:
+        await set_night_mode(message.chat.id, False, settings["night_mode_start"], settings["night_mode_end"], settings["night_mode_timezone"])
+        await message.answer("🌙 Modo nocturno desactivado.")
+        return
+    values = parts[1:]
+    if values[0].lower() in {"on", "activar"}:
+        values = values[1:]
+    if len(values) not in {2, 3}:
+        await message.answer("Uso: <code>/noche on 22:00 07:00 America/Santiago</code> o <code>/noche off</code>.", parse_mode="HTML")
+        return
+    start, end = values[0], values[1]
+    timezone = values[2] if len(values) == 3 else settings["night_mode_timezone"]
+    try:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", end):
+            raise ValueError
+        ZoneInfo(timezone)
+    except (ValueError, KeyError):
+        await message.answer("⚠️ Usa horas de 24 h (HH:MM) y una zona válida, como <code>America/Santiago</code>.", parse_mode="HTML")
+        return
+    if start == end:
+        await message.answer("⚠️ La hora de inicio y fin no pueden ser iguales.")
+        return
+    await set_night_mode(message.chat.id, True, start, end, timezone)
+    await message.answer(
+        f"✅ Modo nocturno activado: <b>{start}–{end}</b> ({escape(timezone)}). "
+        "Los mensajes de miembros se eliminarán durante ese horario.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("antiraid"))
+async def anti_raid(message: Message):
+    if not await _admin(message):
+        return
+    parts = (message.text or "").split()
+    settings = await get_settings(message.chat.id)
+    if len(parts) == 1:
+        state = "activada" if settings["antiraid_enabled"] else "desactivada"
+        await message.answer(
+            f"🚨 Protección anti-raid {state}. Se activa con {settings['raid_join_threshold']} ingresos "
+            f"en {settings['raid_window_seconds']} segundos.\n"
+            "Al detectar una oleada, los nuevos ingresos deben resolver CAPTCHA durante dos minutos.\n\n"
+            "Configurar: <code>/antiraid on 8 30</code> · Apagar: <code>/antiraid off</code>",
+            parse_mode="HTML",
+        )
+        return
+    if parts[1].lower() in {"off", "apagar"}:
+        await set_antiraid(message.chat.id, False, settings["raid_join_threshold"], settings["raid_window_seconds"])
+        await message.answer("🚨 Protección anti-raid desactivada.")
+        return
+    if parts[1].lower() not in {"on", "activar"}:
+        await message.answer("Usa <code>/antiraid on 8 30</code> o <code>/antiraid off</code>.", parse_mode="HTML")
+        return
+    try:
+        threshold = int(parts[2]) if len(parts) > 2 else settings["raid_join_threshold"]
+        window = int(parts[3]) if len(parts) > 3 else settings["raid_window_seconds"]
+    except ValueError:
+        await message.answer("⚠️ El umbral y la ventana deben ser números.")
+        return
+    if not 3 <= threshold <= 100 or not 10 <= window <= 300:
+        await message.answer("⚠️ El umbral debe ser 3–100 miembros y la ventana 10–300 segundos.")
+        return
+    await set_antiraid(message.chat.id, True, threshold, window)
+    await message.answer(
+        f"✅ Protección anti-raid activada: <b>{threshold} ingresos en {window}s</b>. "
+        "Si detecta una oleada, pedirá CAPTCHA a los nuevos miembros durante dos minutos.",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("bloquear", "desbloquear"))
@@ -249,13 +423,4 @@ async def custom_command(message: Message):
     name = normalize_name((message.text or "").split("@")[0])
     content = await get_text("custom_commands", message.chat.id, name)
     if content:
-        if content.startswith(_COPY_COMMAND_PREFIX):
-            try:
-                source_id = int(content[len(_COPY_COMMAND_PREFIX):])
-                await message.bot.copy_message(chat_id=message.chat.id, from_chat_id=message.chat.id, message_id=source_id)
-            except (TypeError, ValueError):
-                await message.answer("⚠️ Este comando guardó una referencia inválida. Vuelve a configurarlo.")
-            except Exception:
-                await message.answer("⚠️ No pude enviar el mensaje guardado. Puede que el mensaje original ya no esté disponible.")
-        else:
-            await message.answer(content)
+        await _send_configured_reply(message, content)
