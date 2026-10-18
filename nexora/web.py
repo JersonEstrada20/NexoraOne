@@ -1360,11 +1360,37 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
         "usuarios_por_estado": [],
         "solicitudes_por_estado": [],
         "analytics_loaded": detailed,
+        "summary_loaded": False,
     }
-    # The summary is the default landing page. Keep it responsive on remote
-    # database plans by avoiding analytics queries entirely; the detailed
-    # queries remain available on the stats section where explicitly requested.
+    # Keep expensive historical analytics on the stats page. The summary still
+    # loads the small pending-count and latest-activity indicators it displays.
     if not detailed:
+        conn = None
+        try:
+            conn = get_conn(REQUESTS_DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM requests WHERE status = 'pending'")
+            data["pendientes"] = cur.fetchone()[0]
+            data["summary_loaded"] = True
+        except Exception:
+            pass
+        finally:
+            if conn:
+                conn.close()
+        conn = None
+        try:
+            conn = get_conn(HIST_DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT consulta, fecha FROM historial ORDER BY fecha DESC LIMIT 5")
+            data["actividad_reciente"] = [
+                {"consulta": str(row[0] or "—"), "fecha": str(row[1] or "—")}
+                for row in cur.fetchall()
+            ]
+        except Exception:
+            pass
+        finally:
+            if conn:
+                conn.close()
         return data
     try:
         conn = get_conn(DB_PATH)

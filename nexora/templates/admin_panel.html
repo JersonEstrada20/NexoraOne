@@ -63,7 +63,6 @@
           <div><span class="eyebrow">VISTA GENERAL</span><h2>Resumen</h2></div>
           <span class="live-pill"><span aria-hidden="true"></span> Sesión activa</span>
         </div>
-        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">El resumen omite los análisis del historial para cargar más ligero. Puedes consultarlos en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a>.</div>{% endif %}
         <div class="summary">
           <div class="metric"><span class="pill">🗂️ Categorías</span><h3>{{ categories|length }}</h3><div class="small">Secciones del catálogo</div></div>
           <div class="metric"><span class="pill">⚡ Comandos</span><h3>{{ commands|length }}</h3><div class="small">Servicios registrados</div></div>
@@ -74,13 +73,13 @@
         <div class="section-grid" style="margin-top:16px;">
           <div class="mini-card">
             <div class="toolbar"><strong>Atención</strong><a href="{{ url_for('admin_panel', section='solicitudes') }}">Abrir bandeja</a></div>
-            <h3>{% if dashboard.analytics_loaded %}{{ dashboard.pendientes }}{% else %}—{% endif %} solicitudes pendientes</h3>
+            <h3>{% if dashboard.summary_loaded %}{{ dashboard.pendientes }}{% else %}No disponible{% endif %} solicitudes pendientes</h3>
             <div class="small">Solicitudes recibidas que todavía esperan respuesta.</div>
           </div>
           {% if panel_role == 'FUNDADOR' %}
           <div class="mini-card">
             <div class="toolbar"><strong>Errores del último día</strong><a href="{{ url_for('admin_panel', section='sistema') }}">Ver sistema</a></div>
-            <h3>{% if dashboard.analytics_loaded %}{{ dashboard.errores_recientes }}{% else %}—{% endif %}</h3>
+            <h3>{{ dashboard.errores_recientes }}</h3>
             <div class="small">Dentro de los últimos 50 errores guardados.</div>
           </div>
           {% endif %}
