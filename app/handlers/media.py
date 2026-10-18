@@ -591,6 +591,36 @@ def _duration(seconds) -> str:
 
 async def _download_process(query: str, audio: bool = False, quality: str = "720", job_id: str = "") -> tuple[Path, Path, dict]:
     work = Path(tempfile.mkdtemp(prefix="doxertube_"))
+    if _is_tiktok_asset_url(query):
+        # Tikwm already resolved TikTok to a signed CDN file URL. yt-dlp does
+        # not have a platform extractor for these asset URLs, so fetch the
+        # file directly instead of passing it to yt-dlp as a media page.
+        destination = work / "tiktok-video.mp4"
+        try:
+            request = Request(
+                query,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+            )
+            with urlopen(request, timeout=30) as response:
+                if not _is_tiktok_asset_url(response.geturl()):
+                    raise RuntimeError("TikTok redirigió el archivo a una ubicación no permitida.")
+                if not response.headers.get_content_type().startswith("video/"):
+                    raise RuntimeError("TikTok no devolvió un archivo de video válido.")
+                declared_size = response.headers.get("Content-Length")
+                if declared_size and int(declared_size) > MAX_UPLOAD:
+                    raise RuntimeError("El archivo supera el límite de Telegram.")
+                total = 0
+                with destination.open("wb") as output:
+                    while chunk := response.read(256 * 1024):
+                        total += len(chunk)
+                        if total > MAX_UPLOAD:
+                            raise RuntimeError("El archivo supera el límite de Telegram.")
+                        output.write(chunk)
+        except Exception:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        return destination, work, {"title": "Video de TikTok", "uploader": None}
+
     # Generic CDN IDs can contain the entire signed URL. Bound both fields.
     target = str(work / "%(title).120B-%(id).64B.%(ext)s")
     if audio:
