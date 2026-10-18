@@ -394,8 +394,8 @@ def _home_caption(cfg: dict, user) -> str:
     return (
         f"✨ <b>{bot_name} · CATÁLOGO DE SERVICIOS</b>\n\n"
         f"👋 Hola, <a href=\"{link}\">{nombre}</a>\n\n"
-        "🧭 Elige una categoría y encuentra rápido la consulta que necesitas.\n"
-        "⚡ Cada comando muestra ejemplo, costo y estado en tiempo real."
+        "🧭 Explora una categoría y encuentra rápido lo que necesitas.\n"
+        "⚡ Revisa el costo y cómo usar cada servicio antes de elegirlo."
     )
 
 
@@ -408,10 +408,9 @@ def _category_caption(cfg: dict, category: dict, commands: list[dict], page: int
     items = commands[start:end]
 
     lines = [
-        f"<b>{bot_name}</b> <i>CATÁLOGO ACTIVO</i>",
-        f"🏷️ <b>Categoría</b> ⇒ <code>{html.escape(category['name'])} {_category_icon(category)}</code>",
-        f"🧩 <b>Comandos</b> ⇒ <code>{total_commands}</code> disponibles",
-        f"📖 <b>Página</b> ⇒ <code>{page}/{total_pages}</code>",
+        f"✨ <b>{bot_name} · SERVICIOS</b>",
+        f"🗂️ <b>{html.escape(category['name'])}</b> · {total_commands} servicios",
+        f"📄 Página {page}/{total_pages}",
         "",
     ]
 
@@ -425,13 +424,9 @@ def _category_caption(cfg: dict, category: dict, commands: list[dict], page: int
         desc = cmd.get("description") or fallback.get("description") or "Sin descripción."
         is_active = bool(cmd.get("is_active"))
         lines.extend([
-            f"🔹 <b>{html.escape(cmd['name'])}</b>",
-            "┈┈┈┈┈┈┈┈┈┈",
-            f"{'🟢' if is_active else '🔴'} <b>Estado</b> ⇒ <b>{'ACTIVO' if is_active else 'INACTIVO'}</b>",
-            f"💎 <b>Plan</b> ⇒ <code>{html.escape(_command_plan_label(cmd))}</code>",
-            f"⌨️ <b>Uso</b> ⇒ <code>{html.escape(usage)}</code>",
-            f"💳 <b>Costo</b> ⇒ <code>{int(cmd['cost'])} créditos</code>",
-            f"📌 <b>Detalle</b> ⇒ <i>{html.escape(desc)}</i>",
+            f"{'🟢' if is_active else '🔴'} <b>{html.escape(cmd['name'])}</b> · {html.escape(_command_plan_label(cmd))}",
+            f"⌨️ <code>{html.escape(usage)}</code> · 💎 <b>{int(cmd['cost'])} créditos</b>",
+            f"<i>{html.escape(desc)}</i>",
             "",
         ])
 
@@ -445,15 +440,13 @@ def _search_caption(cfg: dict, query: str, commands: list[dict], page: int = 1) 
     start = (page - 1) * SEARCH_PAGE_SIZE
     visible = commands[start:start + SEARCH_PAGE_SIZE]
     lines = [
-        f"<b>{bot_name}</b> <i>BÚSQUEDA INTELIGENTE</i>",
-        f"🔎 <b>Búsqueda</b> ⇒ <code>{html.escape(query)}</code>",
-        f"🧩 <b>Resultados</b> ⇒ <code>{len(commands)}</code>",
-        f"📖 <b>Página</b> ⇒ <code>{page}/{total_pages}</code>",
+        f"🔎 <b>{bot_name} · RESULTADOS</b>",
+        f"Búsqueda: <code>{html.escape(query)}</code> · página {page}/{total_pages}",
         "",
     ]
     if not commands:
-        lines.append("⚠️ No encontré comandos con esa búsqueda.")
-        lines.append("Prueba con nombre, categoría o ejemplo de uso.")
+        lines.append("No encontré servicios con esa búsqueda.")
+        lines.append("Prueba con otro nombre o una palabra más corta.")
         return "\n".join(lines)
     for cmd in visible:
         fallback = DEFAULT_DETAILS.get(cmd.get("slug"), {})

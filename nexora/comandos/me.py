@@ -236,7 +236,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tiempo_str, activo, _ = _days_left(exp)
     creditos_str = f"{creditos}{' ♾️' if activo else ''}"
 
-    header = f"{_bot_brand()} PANEL DE PERFIL"
+    header = f"👤 {_bot_brand()} · TU CUENTA"
 
     caption = (
         f"<b>{header}</b>\n"
