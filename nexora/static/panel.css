@@ -200,7 +200,7 @@ body { min-height:100vh; line-height:1.55; }
 .hero .small { margin:7px 0 0; }
 .toolbar-right > a { display:inline-flex; justify-content:center; align-items:center; min-height:42px; padding:9px 14px; border:1px solid var(--line); border-radius:12px; color:var(--ink); background:var(--surface); font-weight:750; text-decoration:none; }
 .layout { grid-template-columns:250px minmax(0,1fr); }
-.sidebar { top:20px; max-height:calc(100vh - 40px); overflow:auto; }
+.sidebar { position:static; top:auto; max-height:none; overflow:visible; }
 .side-link { min-height:48px; }
 .content { min-width:0; }
 .card { padding:clamp(16px,2vw,24px); }

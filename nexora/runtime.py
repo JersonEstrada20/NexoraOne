@@ -112,7 +112,7 @@ class ServiceRuntime:
             await handler(update, context)
         except Exception as exc:
             reference = secrets.token_hex(4).upper()
-            logging.exception("Error en módulo de servicios referencia=%s tipo=%s handler=%s",
+            logging.error("Error en módulo de servicios referencia=%s tipo=%s handler=%s",
                               reference, type(exc).__name__, getattr(handler, '__name__', 'unknown'))
             await update.effective_message.reply_text(
                 f"No pude confirmar la operación. Referencia: {reference}.\n"

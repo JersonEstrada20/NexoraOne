@@ -95,3 +95,14 @@ No copies valores desde capturas o logs; escribe los secretos directamente en lo
 - [Precios y Developer Sandbox](https://northflank.com/docs/v1/application/billing/pricing-on-northflank)
 - [Crear servicios desde Git y Dockerfile](https://northflank.com/docs/v1/application/build/build-with-a-dockerfile)
 - [Puertos internos entre servicios](https://northflank.com/docs/v1/application/network/configure-ports)
+
+## Evitar despliegues antes de CI
+
+El workflow Tests ejecuta la suite, pero Northflank puede desplegar en paralelo cuando observa un push. Para que los tests sí sean un bloqueo:
+
+1. En GitHub, configura una regla para la rama de producción que exija pull request y el check de test antes de permitir el merge.
+2. En ambos servicios de Northflank, desactiva el despliegue automático desde la rama de trabajo actual.
+3. Haz que los servicios sigan únicamente la rama protegida de producción.
+4. Fusiona cambios solo cuando Tests / test aparezca en verde.
+
+Mientras Northflank siga siguiendo deploy/northflank-migration sin una regla de CI, el workflow solo avisa del fallo; no impide que se despliegue. Los avisos de correo de GitHub Actions son independientes de los errores de la aplicación.
