@@ -60,47 +60,83 @@ class ServiceRuntime:
             return False
         return bool(self.application.user_data.get(user_id, {}).get(admin_requests.REQUEST_ACTION_KEY))
 
+    async def report_failure(self, event, reference, update=None):
+        """Report a failed dispatch without leaking internals or masking the original error."""
+        if hasattr(event, "data") and hasattr(event, "message"):
+            try:
+                await event.answer(
+                    f"No se pudo completar la operación. Referencia: {reference}.",
+                    show_alert=True,
+                )
+                return
+            except Exception:
+                logging.exception("No se pudo mostrar el aviso del callback referencia=%s", reference)
+
+        message = getattr(update, "effective_message", None) if update else None
+        message = message or getattr(event, "message", None) or event
+        reply = getattr(message, "reply_text", None) or getattr(message, "answer", None)
+        if reply:
+            try:
+                await reply(
+                    f"No pude confirmar la operación. Referencia: {reference}.\n"
+                    "Si modificaba créditos o enviaba una respuesta, revisa el resultado antes de repetirla."
+                )
+            except Exception:
+                logging.exception("No se pudo responder el fallo referencia=%s", reference)
+
     async def invoke(self, event, action=None):
         if not self.application:
             message = getattr(event, "message", None) or event
             await message.answer("El servicio de cuentas todavía no está conectado. El dueño debe configurar NEXORA_API_BASE.")
             return
         is_callback = hasattr(event, "data") and hasattr(event, "message")
-        if is_callback and action is None:
-            payload = {
-                "update_id": 0,
-                "callback_query": event.model_dump(
-                    mode="json",
-                    by_alias=True,
-                    exclude_none=True,
-                    fallback=lambda _value: None,
-                ),
-            }
-            handler = next((fn for prefix, fn in CALLBACKS.items() if event.data.startswith(prefix)), None)
-        else:
-            message = event.message if is_callback else event
-            raw = message.model_dump(mode="json", by_alias=True, exclude_none=True)
-            raw["from"] = event.from_user.model_dump(mode="json", exclude_none=True)
-            raw.pop("from_user", None)
-            if action:
-                raw["text"] = "/" + action
-                raw.pop("entities", None)
-            payload = {"update_id": 0, "message": raw}
-            text = raw.get("text", "")
-            command = text.split()[0].split("@")[0].lstrip("/") if text.startswith("/") else ""
-            handler = ACTIONS.get(action) if action else COMMANDS.get(command)
-            if not handler and self.waiting_for_owner(event.from_user.id):
-                handler = admin_requests.admin_followup_message if text else admin_requests.forward_file
-        if not handler:
+        command = ""
+        try:
+            if is_callback and action is None:
+                payload = {
+                    "update_id": 0,
+                    "callback_query": event.model_dump(
+                        mode="json",
+                        by_alias=True,
+                        exclude_none=True,
+                        fallback=lambda _value: None,
+                    ),
+                }
+                handler = next((fn for prefix, fn in CALLBACKS.items() if event.data.startswith(prefix)), None)
+            else:
+                message = event.message if is_callback else event
+                raw = message.model_dump(mode="json", by_alias=True, exclude_none=True)
+                raw["from"] = event.from_user.model_dump(mode="json", exclude_none=True)
+                raw.pop("from_user", None)
+                if action:
+                    raw["text"] = "/" + action
+                    raw.pop("entities", None)
+                payload = {"update_id": 0, "message": raw}
+                text = raw.get("text", "")
+                command = text.split()[0].split("@")[0].lstrip("/") if text.startswith("/") else ""
+                handler = ACTIONS.get(action) if action else COMMANDS.get(command)
+                if not handler and self.waiting_for_owner(event.from_user.id):
+                    handler = admin_requests.admin_followup_message if text else admin_requests.forward_file
+
+            if not handler:
+                return
+            update = Update.de_json(payload, self.application.bot)
+            context = CallbackContext.from_update(update, self.application)
+            context.args = [] if action or is_callback else (update.effective_message.text or "").split()[1:]
+        except Exception:
+            reference = secrets.token_hex(4).upper()
+            logging.exception(
+                "No se pudo preparar el evento referencia=%s tipo=%s",
+                reference,
+                "callback" if is_callback else "message",
+            )
+            await self.report_failure(event, reference)
             return
         privileged = (action in {"admin", "web", "health", "setup"}
                       or (not is_callback and not action and command in ADMIN)
                       or (is_callback and action is None and event.data.startswith(("global_", "adminreq:", "adminmenu:"))))
         if privileged and event.from_user.id != OWNER_USER_ID:
             return
-        update = Update.de_json(payload, self.application.bot)
-        context = CallbackContext.from_update(update, self.application)
-        context.args = [] if action or is_callback else (update.effective_message.text or "").split()[1:]
         if not action and not is_callback and command not in ADMIN:
             key = (event.from_user.id, command)
             now = time.monotonic()
@@ -110,13 +146,14 @@ class ServiceRuntime:
             self.calls[key] = now
         try:
             await handler(update, context)
-        except Exception as exc:
+        except Exception:
             reference = secrets.token_hex(4).upper()
-            logging.error("Error en módulo de servicios referencia=%s tipo=%s handler=%s",
-                              reference, type(exc).__name__, getattr(handler, '__name__', 'unknown'))
-            await update.effective_message.reply_text(
-                f"No pude confirmar la operación. Referencia: {reference}.\n"
-                "Si modificaba créditos o enviaba una respuesta, revisa el resultado antes de repetirla.")
+            logging.exception(
+                "Error en módulo de servicios referencia=%s handler=%s",
+                reference,
+                getattr(handler, "__name__", "unknown"),
+            )
+            await self.report_failure(event, reference, update)
 
 
 runtime = ServiceRuntime()
