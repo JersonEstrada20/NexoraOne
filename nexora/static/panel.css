@@ -245,3 +245,13 @@ td { overflow-wrap:anywhere; }
   .summary { grid-template-columns:1fr; }
   .toolbar-right > a { width:100%; }
 }
+
+/* Keep the top controls readable instead of squeezing their labels. */
+.toolbar > div:first-child { min-width:0; }
+.toolbar-right { min-width:0; flex-wrap:wrap; justify-content:flex-end; }
+.toolbar-right > * { min-width:0; }
+.toolbar-right > a { flex:0 0 auto; white-space:nowrap; }
+.search-form { flex:1 1 380px; max-width:640px; }
+@media (max-width:1100px) {
+  .toolbar-right { justify-content:stretch; }
+}
