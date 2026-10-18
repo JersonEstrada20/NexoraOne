@@ -3,6 +3,7 @@ import asyncio
 import logging
 import time
 import secrets
+import traceback
 from telegram import Update
 from telegram.ext import Application, CallbackContext
 from nexora.comandos import admin_ops, admin_requests, admin_tools, broadcast, buy, cmds, compras, genkey, helpadmin, historial, me, precios, setup, system_ops, terminos
@@ -60,6 +61,19 @@ class ServiceRuntime:
             return False
         return bool(self.application.user_data.get(user_id, {}).get(admin_requests.REQUEST_ACTION_KEY))
 
+    @staticmethod
+    def log_failure(message, reference, error, handler=None):
+        """Log source locations and error type, never exception text or payloads."""
+        frames = "".join(traceback.format_list(traceback.extract_tb(error.__traceback__)))
+        logging.error(
+            "%s referencia=%s tipo=%s handler=%s\n%s",
+            message,
+            reference,
+            type(error).__name__,
+            getattr(handler, "__name__", "unknown"),
+            frames,
+        )
+
     async def report_failure(self, event, reference, update=None):
         """Report a failed dispatch without leaking internals or masking the original error."""
         if hasattr(event, "data") and hasattr(event, "message"):
@@ -69,8 +83,8 @@ class ServiceRuntime:
                     show_alert=True,
                 )
                 return
-            except Exception:
-                logging.exception("No se pudo mostrar el aviso del callback referencia=%s", reference)
+            except Exception as exc:
+                self.log_failure("No se pudo mostrar el aviso del callback", reference, exc)
 
         message = getattr(update, "effective_message", None) if update else None
         message = message or getattr(event, "message", None) or event
@@ -81,8 +95,8 @@ class ServiceRuntime:
                     f"No pude confirmar la operación. Referencia: {reference}.\n"
                     "Si modificaba créditos o enviaba una respuesta, revisa el resultado antes de repetirla."
                 )
-            except Exception:
-                logging.exception("No se pudo responder el fallo referencia=%s", reference)
+            except Exception as exc:
+                self.log_failure("No se pudo responder el fallo", reference, exc)
 
     async def invoke(self, event, action=None):
         if not self.application:
@@ -123,12 +137,12 @@ class ServiceRuntime:
             update = Update.de_json(payload, self.application.bot)
             context = CallbackContext.from_update(update, self.application)
             context.args = [] if action or is_callback else (update.effective_message.text or "").split()[1:]
-        except Exception:
+        except Exception as exc:
             reference = secrets.token_hex(4).upper()
-            logging.exception(
-                "No se pudo preparar el evento referencia=%s tipo=%s",
+            self.log_failure(
+                "No se pudo preparar el evento " + ("callback" if is_callback else "message"),
                 reference,
-                "callback" if is_callback else "message",
+                exc,
             )
             await self.report_failure(event, reference)
             return
@@ -146,13 +160,9 @@ class ServiceRuntime:
             self.calls[key] = now
         try:
             await handler(update, context)
-        except Exception:
+        except Exception as exc:
             reference = secrets.token_hex(4).upper()
-            logging.exception(
-                "Error en módulo de servicios referencia=%s handler=%s",
-                reference,
-                getattr(handler, "__name__", "unknown"),
-            )
+            self.log_failure("Error en módulo de servicios", reference, exc, handler)
             await self.report_failure(event, reference, update)
 
 
