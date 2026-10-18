@@ -343,7 +343,7 @@ def _kb_home(categories: list[dict]):
     for cat in categories:
         row.append(
             InlineKeyboardButton(
-                text=f"[{_category_icon(cat)}] {cat['name']}",
+                text=f"{_category_icon(cat)} {cat['name']}",
                 callback_data=f"cmds_cat_{cat['slug']}_1",
             )
         )
@@ -392,7 +392,7 @@ def _home_caption(cfg: dict, user) -> str:
     nombre = html.escape(user.first_name or "Usuario")
     link = _user_link(user)
     return (
-        f"<b>{bot_name} CENTRO DE COMANDOS</b>\n\n"
+        f"✨ <b>{bot_name} · CATÁLOGO DE SERVICIOS</b>\n\n"
         f"👋 Hola, <a href=\"{link}\">{nombre}</a>\n\n"
         "🧭 Elige una categoría y encuentra rápido la consulta que necesitas.\n"
         "⚡ Cada comando muestra ejemplo, costo y estado en tiempo real."

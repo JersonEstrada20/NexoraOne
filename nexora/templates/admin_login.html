@@ -13,7 +13,7 @@
       <div>
         <img src="/assets/default/nexora-one-avatar.png" alt="NEXORA ONE" width="96" height="96" style="border-radius:20px">
         <h1>NEXORA ONE</h1>
-        <p>Centro privado para manejar comandos, usuarios, ventas, keys y solicitudes del bot.</p>
+        <p>Administra tu bot y atiende a tu comunidad desde un panel sencillo y privado.</p>
       </div>
       <div class="status-grid">
         <div class="status-pill"><span>👤 Rol</span> Admin</div>
@@ -23,20 +23,20 @@
     </section>
     <section class="form-card">
       <div class="topline">
-        <strong>Ingreso seguro</strong>
+        <strong>Acceso privado</strong>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Cambiar tema visual" aria-pressed="false">🌙 Tema oscuro</button>
       </div>
-      <h2>Acceso al panel</h2>
-      <p>Entra con tu usuario y clave admin para editar catálogo, precios, usuarios y permisos.</p>
+      <h2>Bienvenido de nuevo</h2>
+      <p>Ingresa con tu cuenta de administrador para continuar.</p>
       {% if error %}<div class="error">{{ error }}</div>{% endif %}
       <form method="post">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>Usuario</label>
-        <input name="username" placeholder="admin" autocomplete="username" required autofocus>
-        <label>Clave</label>
-        <input name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
-        <button class="primary" type="submit">Entrar al panel</button>
-        <div class="hint">Panel privado NEXORA ONE, conectado a tu entorno de producción.</div>
+        <label for="panel-username">Usuario administrador</label>
+        <input id="panel-username" name="username" placeholder="Tu usuario" autocomplete="username" required autofocus>
+        <label for="panel-password">Contraseña</label>
+        <input id="panel-password" name="password" type="password" placeholder="Ingresa tu contraseña" autocomplete="current-password" required>
+        <button class="primary" type="submit">Entrar al panel <span aria-hidden="true">→</span></button>
+        <div class="hint">Solo el personal autorizado puede acceder.</div>
       </form>
     </section>
   </main>

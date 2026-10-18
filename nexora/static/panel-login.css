@@ -160,3 +160,36 @@
       .form-card { padding:24px; }
       h2 { font-size:29px; }
     }
+
+    :root {
+      --bg:#f3f7f5; --bg-2:#e9f1ed; --ink:#17231f; --muted:#62716b;
+      --card:#fff; --surface:#f5f9f7; --line:#d5ded9; --accent:#138b79;
+      --accent-strong:#09695e; --accent-soft:#dff4ec; --accent-ink:#fff;
+      --field:#fff; --shadow:0 24px 60px rgba(22,58,46,.13);
+    }
+    body.dark {
+      --bg:#091310; --bg-2:#10231d; --ink:#eef7f3; --muted:#a2b8ae;
+      --card:#101b17; --surface:#15231e; --line:#263b35; --accent:#5be0bb;
+      --accent-strong:#39b996; --accent-soft:#14362d; --accent-ink:#06231d;
+      --field:#0c1712; --shadow:0 26px 72px rgba(0,0,0,.42);
+    }
+    .login-shell { border-radius:28px; }
+    .brand { position:relative; overflow:hidden; }
+    .brand::after { content:""; position:absolute; width:250px; height:250px; right:-135px; bottom:-145px; border:1px solid color-mix(in srgb,var(--accent) 28%,transparent); border-radius:50%; box-shadow:0 0 0 24px color-mix(in srgb,var(--accent) 6%,transparent),0 0 0 50px color-mix(in srgb,var(--accent) 4%,transparent); pointer-events:none; }
+    .brand img { display:block; margin-bottom:20px; box-shadow:0 16px 36px rgba(0,0,0,.18); }
+    .brand h1 { letter-spacing:-.045em; }
+    .topline strong { letter-spacing:.12em; }
+    .form-card h2 { letter-spacing:-.045em; }
+    .theme-toggle { transition:transform .16s ease,border-color .16s ease; }
+    .theme-toggle:hover { transform:translateY(-1px); border-color:var(--accent); }
+    button.primary { display:flex; justify-content:center; align-items:center; gap:10px; transition:transform .16s ease,filter .16s ease; }
+    button.primary:hover { transform:translateY(-1px); filter:brightness(1.06); }
+    :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 70%,white); outline-offset:3px; }
+    ::selection { color:var(--accent-ink); background:var(--accent); }
+    @media (max-width:780px) {
+      body { place-items:start center; }
+      .login-shell { margin:12px 0; }
+      .brand { gap:24px; }
+      .brand img { width:72px; height:72px; }
+      .topline { align-items:flex-start; flex-direction:column; }
+    }

@@ -1,3 +1,5 @@
+from html import escape
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
@@ -164,10 +166,8 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
         ("🧰 Group tools", "grouptools"), ("📖 Admin guide", "guide"),
     ]
     buttons = buttons_en if language == "en" else buttons_es
-    for label, key in buttons:
-        if role == "user" and key in {"moderation", "settings", "staff", "grouptools", "guide"}:
-            continue
-        builder.button(text=label, callback_data=f"mainmenu:{key}")
+    if section != "home":
+        buttons = []
     if section == "home":
         home_actions = (
             [("💳 Services", "unified:0:catalog"), ("📝 Register", "unified:0:register"),
@@ -178,6 +178,10 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
         )
         for label, callback_data in home_actions:
             builder.button(text=label, callback_data=callback_data)
+        for label, key in buttons:
+            if role == "user" and key in {"moderation", "settings", "staff", "grouptools", "guide"}:
+                continue
+            builder.button(text=label, callback_data=f"mainmenu:{key}")
         if role != "user":
             label = "🎛 Admin panel" if language == "en" else "🎛 Panel de administración"
             builder.button(text=label, callback_data="unified:0:paneladmin")
@@ -200,24 +204,26 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
 
 
 HOME = (
-    "\U0001f916 <b>NEXORA ONE</b>\n\n"
-    "Elige una categoría para ver sus comandos y ejemplos.\n"
-    "Para usar Consultas y Servicios, primero crea tu cuenta gratis con /register."
+    "✨ <b>NEXORA ONE</b>\n"
+    "Tu espacio para servicios, juegos y herramientas de comunidad.\n\n"
+    "<b>¿Qué quieres hacer?</b>\n"
+    "Elige un acceso rápido o abre una categoría. Para usar los servicios, crea tu cuenta gratis con /register."
 )
 HOME_EN = (
-    "\U0001f916 <b>NEXORA ONE</b>\n\n"
-    "Choose a category to see its commands and examples.\n"
-    "To use Services, first create your free account with /register."
+    "✨ <b>NEXORA ONE</b>\n"
+    "Your space for services, games, and community tools.\n\n"
+    "<b>What would you like to do?</b>\n"
+    "Choose a quick action or open a category. Create your free account to use services with /register."
 )
 WELCOME = (
     "¡Hola, {name}! 👋\n\n"
-    "Soy <b>NEXORA ONE</b>. Puedo ayudarte con herramientas del grupo, comunidad, juegos y multimedia.\n\n"
-    "Abre el menú para explorar. Si quieres usar Consultas y Servicios, crea primero tu cuenta gratis con /register."
+    "Soy <b>NEXORA ONE</b>: servicios, juegos, multimedia y herramientas para tu comunidad.\n\n"
+    "Usa los accesos rápidos o explora las categorías. Para usar los servicios, crea tu cuenta gratis con /register."
 )
 WELCOME_EN = (
     "Hi, {name}! 👋\n\n"
-    "I am <b>NEXORA ONE</b>. I can help with group tools, community, games, and media.\n\n"
-    "Open the menu to explore. To use Services, create your free account first with /register."
+    "I am <b>NEXORA ONE</b>: services, games, media, and tools for your community.\n\n"
+    "Use a quick action or browse the categories. Create your free account to use services with /register."
 )
 
 
@@ -236,7 +242,7 @@ async def start(message: Message):
     template = WELCOME_EN if language == "en" else WELCOME
     name = (message.from_user.first_name or "").strip() or "amigo"
     await message.reply(
-        template.format(name=name),
+        template.format(name=escape(name)),
         parse_mode="HTML",
         reply_markup=menu_keyboard(language=language, role=role),
     )

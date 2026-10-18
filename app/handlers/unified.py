@@ -40,13 +40,16 @@ async def service_catalog(message):
 
 @router.message(Command("perfil"))
 async def profile(message):
-    await message.answer("👤 Tu perfil — elige qué consultar:", reply_markup=choices([
+    await message.answer(
+        "👤 <b>Mi cuenta</b>\n\nElige qué quieres revisar. Para consultar los créditos de otra persona, responde a su mensaje con <code>/me</code> o usa <code>/me ID</code>.",
+        parse_mode="HTML",
+        reply_markup=choices([
         ("💳 Cuenta y créditos", "account"), ("💵 Soles y juegos", "economy"),
-        ("📈 Actividad del grupo", "activity"), ("🎴 Tarjeta", "card")], message.from_user.id))
+        ("📈 Actividad del grupo", "activity"), ("🎴 Mi tarjeta", "card")], message.from_user.id))
 
 @router.message(Command("historial"))
 async def history(message):
-    await message.answer("📚 Tu historial:", reply_markup=choices([
+    await message.answer("🕘 <b>Mi historial</b>\n\n¿Qué actividad quieres consultar?", parse_mode="HTML", reply_markup=choices([
         ("📥 Descargas", "downloads"), ("🧾 Servicios", "history")], message.from_user.id))
 
 @router.message(Command("paneladmin"))
@@ -65,7 +68,13 @@ async def panel(message):
             builder.button(text=label, callback_data=f"unified:{message.from_user.id}:{action}")
         builder.button(text="📥 Descargas", callback_data="downloads:panel")
     builder.adjust(1)
-    await message.answer("🎛 Panel administrativo\n\nDueño: /ban, /unban, /bangg, /unbangg, /backup.\nGrupo: /bang y /unbang.", reply_markup=builder.as_markup())
+    await message.answer(
+        "🎛 <b>Panel de administración</b>\n\nAbre una sección con los botones. "
+        "Comandos de mantenimiento: <code>/backup</code> · <code>/estado</code>.\n"
+        "Moderación global: <code>/ban</code> · <code>/unban</code> · <code>/bangg</code> · <code>/unbangg</code>.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup(),
+    )
 
 @router.callback_query(F.data.startswith("unified:"))
 async def selected(callback):

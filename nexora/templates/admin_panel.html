@@ -11,16 +11,17 @@
     <div class="hero">
       <div class="toolbar">
         <div>
-          <h1>NEXORA ONE · Administración</h1>
+          <p class="eyebrow">CENTRO DE CONTROL · NEXORA ONE</p>
+          <h1>Panel de administración</h1>
           <p id="panel-save-status" class="small" role="status" aria-live="polite"></p>
-          <p class="muted">Aquí puedes gestionar catálogo, info visible, precios, estados y paquetes de compra sin tocar Python.</p>
-          <p class="small">Sesión: <strong>{{ session.get('panel_user') or 'admin' }}</strong> · Rol: <strong>{{ panel_role }}</strong></p>
+          <p class="muted">Gestiona el bot, revisa la actividad y atiende solicitudes desde un solo lugar.</p>
+          <p class="small">Sesión de <strong>{{ session.get('panel_user') or 'admin' }}</strong> · Rol <strong>{{ panel_role }}</strong></p>
         </div>
         <div class="toolbar-right">
           <form method="get" action="{{ url_for('admin_panel') }}" class="search-form">
             <input type="hidden" name="section" value="buscar">
-            <input name="gq" value="{{ global_q }}" placeholder="Buscar ID, username, comando o vendedor">
-            <button type="submit">Buscar</button>
+            <input name="gq" value="{{ global_q }}" placeholder="Busca usuarios, comandos o solicitudes">
+            <button type="submit">🔎 Buscar</button>
           </form>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Cambiar tema visual" aria-pressed="false">🌙 Tema oscuro</button>
           <a href="{{ url_for('panel_logout') }}">Cerrar sesión</a>
@@ -48,23 +49,26 @@
       <p class="small">Panel privado NEXORA ONE conectado a tu entorno de producción.</p>
     </div>
     <div class="layout">
-      <div class="sidebar">
+      <nav class="sidebar" aria-label="Navegación del panel">
         {% for nav in panel_nav_items %}
         <a class="side-link {% if active_section == nav.section %}active{% endif %}" href="{{ url_for('admin_panel', section=nav.section) }}" {% if active_section == nav.section %}aria-current="page"{% endif %}>
           <span class="nav-icon" aria-hidden="true">{{ nav.icon }}</span><span>{{ nav.label }}</span>
         </a>
         {% endfor %}
-      </div>
+      </nav>
       <div class="content">
       {% if active_section == 'resumen' %}
       <div id="sec-resumen" class="card">
-        <h2>Resumen</h2>
+        <div class="section-heading">
+          <div><span class="eyebrow">VISTA GENERAL</span><h2>Resumen</h2></div>
+          <span class="live-pill"><span aria-hidden="true"></span> Sesión activa</span>
+        </div>
         {% if not dashboard.analytics_loaded %}<div class="flash" role="status">Resumen en modo rápido: los análisis del historial se cargan en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a> porque la base remota está tardando.</div>{% endif %}
         <div class="summary">
-          <div class="metric"><span class="pill">Categorías</span><h3>{{ categories|length }}</h3><div class="small">Bloques del catálogo</div></div>
-          <div class="metric"><span class="pill">Comandos</span><h3>{{ commands|length }}</h3><div class="small">Total registrados</div></div>
-          <div class="metric"><span class="pill">Activos</span><h3>{{ commands|selectattr('is_active')|list|length }}</h3><div class="small">Disponibles para uso</div></div>
-          <div class="metric"><span class="pill">Paquetes</span><h3>{{ buy_packages|length }}</h3><div class="small">Líneas para /buy</div></div>
+          <div class="metric"><span class="pill">🗂️ Categorías</span><h3>{{ categories|length }}</h3><div class="small">Secciones del catálogo</div></div>
+          <div class="metric"><span class="pill">⚡ Comandos</span><h3>{{ commands|length }}</h3><div class="small">Servicios registrados</div></div>
+          <div class="metric"><span class="pill">✅ Activos</span><h3>{{ commands|selectattr('is_active')|list|length }}</h3><div class="small">Disponibles para uso</div></div>
+          <div class="metric"><span class="pill">🛍️ Paquetes</span><h3>{{ buy_packages|length }}</h3><div class="small">Opciones de compra</div></div>
         </div>
         {% if panel_role in ['FUNDADOR', 'CO-FUNDADOR', 'SOPORTE'] %}
         <div class="section-grid" style="margin-top:16px;">
