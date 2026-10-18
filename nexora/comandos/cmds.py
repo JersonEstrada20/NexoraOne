@@ -5,6 +5,7 @@ import math
 import sqlite3
 from nexora.db import connect as db_connect
 import time
+import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -482,21 +483,25 @@ async def _send_or_edit_menu(message_or_query, text: str, markup, image_url: str
         return
 
     if image_url:
-        await message.reply_photo(
-            photo=image_url,
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=markup,
-            reply_to_message_id=message.message_id,
-        )
-    else:
-        await message.reply_text(
-            text=text,
-            parse_mode="HTML",
-            reply_markup=markup,
-            disable_web_page_preview=True,
-            reply_to_message_id=message.message_id,
-        )
+        try:
+            await message.reply_photo(
+                photo=image_url,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=markup,
+                reply_to_message_id=message.message_id,
+            )
+            return
+        except Exception as exc:
+            logging.warning("No se pudo enviar la portada del catálogo (%s); se usará texto", type(exc).__name__)
+
+    await message.reply_text(
+        text=text,
+        parse_mode="HTML",
+        reply_markup=markup,
+        disable_web_page_preview=True,
+        reply_to_message_id=message.message_id,
+    )
 
 
 async def cmds_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

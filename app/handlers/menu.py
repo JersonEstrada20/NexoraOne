@@ -91,7 +91,7 @@ SECTIONS = {
     "grouptools": (
         "🧰 <b>Herramientas avanzadas del grupo</b>\n\n"
         "🗒 <code>/save nombre texto</code> · <code>/get nombre</code> · <code>/notes</code>\n"
-        "⚡ <code>/setcmd nombre respuesta</code> · <code>/cmds</code>\n"
+        "⚡ <code>/setcmd nombre respuesta</code> · <code>/mycmds</code>\n"
         "📌 <code>/pin</code> · <code>/unpin</code> · <code>/unpinall</code>\n"
         "🐢 <code>/slowmode 10</code> — 0 para apagar\n"
         "🔒 <code>/bloquear fotos</code> · <code>/desbloquear fotos</code> · <code>/bloqueos</code>\n"
@@ -129,7 +129,7 @@ SECTIONS["grouptools"] += (
     "\n\n🧩 <b>Comandos personalizados</b>\n"
     "<code>/setcmd nombre texto</code> crea una respuesta. Para guardar foto, audio, video, GIF, "
     "documento, sticker o formato, responde al mensaje con <code>/setcmd nombre</code>; conserva el original en el grupo.\n"
-    "Lista: <code>/cmds</code> · Borrar: <code>/delcmd nombre</code>."
+    "Lista: <code>/mycmds</code> · Borrar: <code>/delcmd nombre</code>."
 )
 SECTIONS["general"] += (
     "\n\n💳 <b>Cuenta y créditos</b>\n"
@@ -143,7 +143,7 @@ EN_SECTIONS = {
     "moderation": "🚨 <b>Moderation</b>\n\nReply to a user: <code>/warn reason</code> · <code>/mute 10m</code> · <code>/bang reason</code>\n<code>/unwarn</code> · <code>/unmute</code> · <code>/unbang ID</code> · <code>/acciones</code>\nUse the administrative buttons below for the full control center.",
     "settings": "⚙️ <b>Group settings</b>\n\nUse the administrative buttons below.\n<code>/antilink on|off</code> · <code>/antiflood on|off</code> · <code>/captcha on|off</code>\n<code>/setwelcome text</code> · <code>/setrules text</code> · <code>/setlogchannel ID</code>\n<code>/canalobligatorio @channel</code> · <code>/autolimpieza 15</code> · <code>/idioma es|en</code>",
     "staff": "🛡 <b>Staff</b>\n\n<code>/staff</code> · <code>/admins</code> · <code>/promotebtn</code> · <code>/demote</code>\n<code>/staffnick Name</code> · <code>/staffrole Role</code> · <code>/infouser</code>",
-    "grouptools": "🧰 <b>Advanced group tools</b>\n\nNotes: <code>/save</code> · <code>/get</code> · <code>/notes</code>\nCustom commands: <code>/setcmd</code> · <code>/cmds</code>\nGiveaways: <code>/sorteo 10m Prize</code> · Levels: <code>/perfil</code>\nSchedules: <code>/programar 30m Message</code> · Polls: <code>/encuesta Question | Yes | No</code>\nConfiguration: <code>/exportarconfig</code> · <code>/importarconfig</code>",
+    "grouptools": "🧰 <b>Advanced group tools</b>\n\nNotes: <code>/save</code> · <code>/get</code> · <code>/notes</code>\nCustom commands: <code>/setcmd</code> · <code>/mycmds</code>\nGiveaways: <code>/sorteo 10m Prize</code> · Levels: <code>/perfil</code>\nSchedules: <code>/programar 30m Message</code> · Polls: <code>/encuesta Question | Yes | No</code>\nConfiguration: <code>/exportarconfig</code> · <code>/importarconfig</code>",
     "guide": "📖 <b>Administrator guide</b>\n\n1. Add the bot as administrator.\n2. Disable privacy mode in BotFather.\n3. Open <code>/menu</code> and choose Settings.\n4. Configure a log channel.\n5. Use the administrative buttons to review reports and tickets.",
 }
 

@@ -34,6 +34,10 @@ async def register(message):
         text += " La cuenta de servicios estará disponible cuando se conecte la web."
     await message.answer(text)
 
+@router.message(Command("cmds"))
+async def service_catalog(message):
+    await runtime.invoke(message, "catalog")
+
 @router.message(Command("perfil"))
 async def profile(message):
     await message.answer("👤 Tu perfil — elige qué consultar:", reply_markup=choices([
