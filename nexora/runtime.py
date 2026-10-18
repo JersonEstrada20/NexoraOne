@@ -67,7 +67,15 @@ class ServiceRuntime:
             return
         is_callback = hasattr(event, "data") and hasattr(event, "message")
         if is_callback and action is None:
-            payload = {"update_id": 0, "callback_query": event.model_dump(mode="json", by_alias=True, exclude_none=True)}
+            payload = {
+                "update_id": 0,
+                "callback_query": event.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_none=True,
+                    fallback=lambda _value: None,
+                ),
+            }
             handler = next((fn for prefix, fn in CALLBACKS.items() if event.data.startswith(prefix)), None)
         else:
             message = event.message if is_callback else event
