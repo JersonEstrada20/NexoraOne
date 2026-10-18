@@ -94,7 +94,7 @@ async def selected(callback):
     elif action == "custom":
         if await menu_role(callback.bot, message.chat.id, callback.from_user.id) != "user":
             await group_tools.commands(message)
-    elif action in {"account", "history", "catalog", "admin", "web"}:
+    elif action in {"account", "history", "catalog", "buy", "admin", "web"}:
         await runtime.invoke(callback, action)
 
 @router.message(Command(*COMMANDS))

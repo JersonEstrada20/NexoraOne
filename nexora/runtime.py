@@ -28,7 +28,7 @@ ADMIN.update({"dm": admin_tools.dm_command, "user": admin_tools.user_command,
 COMMANDS = {**PUBLIC, **ADMIN, "me": me.me_command}
 COMMANDS.update({name: make_request_command(name, cost, category, validation)
                  for name, cost, category, validation in REQUEST_COMMANDS})
-ACTIONS = {"catalog": cmds.cmds_command, "account": me.me_command,
+ACTIONS = {"catalog": cmds.cmds_command, "buy": buy.buy_command, "account": me.me_command,
            "history": historial.historial_command, "admin": helpadmin.admin_menu_command,
            "web": system_ops.panel_command, "health": system_ops.status_command,
            "setup": setup.setup_command}
@@ -112,8 +112,8 @@ class ServiceRuntime:
             await handler(update, context)
         except Exception as exc:
             reference = secrets.token_hex(4).upper()
-            logging.error("Error en módulo de servicios referencia=%s tipo=%s handler=%s",
-                          reference, type(exc).__name__, getattr(handler, '__name__', 'unknown'))
+            logging.exception("Error en módulo de servicios referencia=%s tipo=%s handler=%s",
+                              reference, type(exc).__name__, getattr(handler, '__name__', 'unknown'))
             await update.effective_message.reply_text(
                 f"No pude confirmar la operación. Referencia: {reference}.\n"
                 "Si modificaba créditos o enviaba una respuesta, revisa el resultado antes de repetirla.")

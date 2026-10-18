@@ -183,6 +183,8 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
                 continue
             builder.button(text=label, callback_data=f"mainmenu:{key}")
         if role != "user":
+            label = "🛍️ Store" if language == "en" else "🛍️ Tienda"
+            builder.button(text=label, callback_data="unified:0:buy")
             label = "🎛 Admin panel" if language == "en" else "🎛 Panel de administración"
             builder.button(text=label, callback_data="unified:0:paneladmin")
         label = "💡 Send suggestion" if language == "en" else "💡 Enviar sugerencia"
@@ -197,9 +199,9 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
         builder.button(text="\U0001fa84 Guided setup" if language == "en" else "\U0001fa84 Configuración guiada", callback_data="setup:home")
     if section != "home":
         builder.button(text="🏠 Home" if language == "en" else "🏠 Inicio", callback_data="mainmenu:home")
-        builder.adjust(2, 2, 2, 1, 1, 1)
+        builder.adjust(2)
     else:
-        builder.adjust(2, 2, 2, 1)
+        builder.adjust(2)
     return builder.as_markup()
 
 

@@ -1,10 +1,12 @@
 import os
 import json
+import logging
 import sqlite3
+from html import escape
 from nexora.db import connect as db_connect
 import time
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from nexora.storage import db_path
 from nexora.comandos.utils import (
@@ -151,7 +153,7 @@ def _build_buy_text(bot_arroba: str, section: str = "all") -> str:
     day_items = sum(len(group.get("items") or []) for group in groups.get("days", []))
     parts = [
         "🛍️ <b>NEXORA ONE · Tienda</b>",
-        f"✨ <b>{bot_arroba}</b> · Elige lo que necesitas para tu cuenta",
+        f"✨ <b>{escape(str(bot_arroba))}</b> · Elige lo que necesitas para tu cuenta",
         f"📦 {credit_items} paquetes de créditos · {day_items} planes por tiempo",
     ]
 
@@ -164,9 +166,12 @@ def _build_buy_text(bot_arroba: str, section: str = "all") -> str:
         parts.append("")
         if groups["credits"]:
             for group in groups["credits"]:
-                parts.append(f"{group['badge']} <b>{group['title']}</b> · <code>{group['subtitle']}</code>")
+                parts.append(
+                    f"{escape(str(group['badge']))} <b>{escape(str(group['title']))}</b> · "
+                    f"<code>{escape(str(group['subtitle']))}</code>"
+                )
                 for item in group["items"]:
-                    parts.append(f"  └ {item}")
+                    parts.append(f"  └ {escape(str(item))}")
                 parts.append("")
         else:
             parts.append("⚠️ Aún no hay paquetes de créditos configurados.")
@@ -178,9 +183,12 @@ def _build_buy_text(bot_arroba: str, section: str = "all") -> str:
         parts.append("")
         if groups["days"]:
             for group in groups["days"]:
-                parts.append(f"{group['badge']} <b>{group['title']}</b> · <code>{group['subtitle']}</code>")
+                parts.append(
+                    f"{escape(str(group['badge']))} <b>{escape(str(group['title']))}</b> · "
+                    f"<code>{escape(str(group['subtitle']))}</code>"
+                )
                 for item in group["items"]:
-                    parts.append(f"  └ {item}")
+                    parts.append(f"  └ {escape(str(item))}")
                 parts.append("")
         else:
             parts.append("⚠️ Aún no hay planes por días configurados.")
@@ -248,21 +256,27 @@ async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = _build_buy_keyboard(settings)
     ft_buy = settings.get("FT_BUY") or (cfg.get("LOGO") or {}).get("FT_BUY") or default_asset_url("ft_buy.png")
 
-    if non_empty(ft_buy):
-        await update.message.reply_photo(
-            photo=ft_buy,
-            caption=texto,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            reply_to_message_id=update.message.message_id,
-        )
-    else:
-        await update.message.reply_text(
-            text=texto,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            reply_to_message_id=update.message.message_id,
-        )
+    # Telegram captions are limited to 1024 characters, while text messages allow
+    # substantially more. Avoid putting a long, configurable catalog in a caption.
+    if non_empty(ft_buy) and len(texto) <= 1000:
+        try:
+            await update.message.reply_photo(
+                photo=ft_buy,
+                caption=texto,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+        except TelegramError:
+            logging.exception("No se pudo enviar la imagen de /buy; se enviará el catálogo como texto")
+
+    await update.message.reply_text(
+        text=texto,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        reply_to_message_id=update.message.message_id,
+    )
 
 
 async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
