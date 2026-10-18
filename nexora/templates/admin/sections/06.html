@@ -1,0 +1,69 @@
+      {% if active_section == 'historial' %}
+      <div class="stack">
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Historial de consultas</h2>
+              <p class="small">Revisa consultas por usuario, comando, plataforma y fecha.</p>
+            </div>
+            <div class="toolbar-right">
+              <a href="{{ url_for('admin_export_history_csv', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q) }}">CSV</a>
+              <a href="{{ url_for('admin_export_history_json', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q) }}">JSON</a>
+            </div>
+          </div>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+            <input type="hidden" name="section" value="historial">
+            <input name="history_user" value="{{ history_user }}" placeholder="ID usuario">
+            <input name="history_q" value="{{ history_q }}" placeholder="Buscar valor">
+            <select name="history_command">
+              <option value="">Todos los comandos</option>
+              {% for slug in history_commands %}
+              <option value="{{ slug }}" {% if history_command == slug %}selected{% endif %}>/{{ slug }}</option>
+              {% endfor %}
+            </select>
+            <select name="history_platform">
+              <option value="">Todas las plataformas</option>
+              <option value="TG" {% if history_platform == 'TG' %}selected{% endif %}>TG</option>
+              <option value="WEB" {% if history_platform == 'WEB' %}selected{% endif %}>WEB</option>
+              <option value="WSP" {% if history_platform == 'WSP' %}selected{% endif %}>WSP</option>
+            </select>
+            <input name="history_from" type="date" value="{{ history_from }}">
+            <input name="history_to" type="date" value="{{ history_to }}">
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="summary">
+            <div class="metric"><span class="pill">Registros</span><h3>{{ history_total }}</h3><div class="small">Coincidencias en el filtro</div></div>
+            <div class="metric"><span class="pill">Usuarios</span><h3>{{ history_rows|map(attribute='ID_TG')|unique|list|length }}</h3><div class="small">En esta página</div></div>
+            <div class="metric"><span class="pill">Comandos</span><h3>{{ history_rows|map(attribute='consulta')|unique|list|length }}</h3><div class="small">En esta página</div></div>
+            <div class="metric"><span class="pill">Plataforma</span><h3>{{ history_platform or 'Todas' }}</h3><div class="small">Filtro elegido</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Valor</th><th>Plataforma</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for row in history_rows %}
+              <tr>
+                <td>#{{ row.ID }}</td>
+                <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a></td>
+                <td><strong>/{{ row.consulta }}</strong></td>
+                <td>{{ row.valor or '—' }}</td>
+                <td>{{ row.plataforma or '—' }}</td>
+                <td>{{ row.fecha or '—' }}</td>
+              </tr>
+              {% endfor %}
+              {% if not history_rows %}
+              <tr><td colspan="6">No hay historial con ese filtro.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+          <div class="pager">
+            <div class="small">Mostrando {{ history_rows|length }} de {{ history_total }} registros. Página {{ history_page }}/{{ history_total_pages }}</div>
+            <div>
+              {% if history_page > 1 %}<a href="{{ url_for('admin_panel', section='historial', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q, history_page=history_page-1) }}">Anterior</a>{% endif %}
+              {% if history_page < history_total_pages %}<a href="{{ url_for('admin_panel', section='historial', history_user=history_user, history_command=history_command, history_platform=history_platform, history_from=history_from, history_to=history_to, history_q=history_q, history_page=history_page+1) }}" class="u-ml-12">Siguiente</a>{% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}

@@ -145,14 +145,111 @@ SECTIONS["general"] += (
 )
 
 EN_SECTIONS = {
-    "downloads": "📥 <b>Music and videos</b>\n\n<code>/play song</code> · <code>/playvideo search</code> · <code>/playdoc search</code>\n<code>/tiktok link</code> · <code>/instagram link</code> · <code>/facebook link</code>\n<code>/cola</code> queue · <code>/historial</code> history · <code>/favoritos</code> favorites",
-    "economy": "🎮 <b>Economy and games</b>\n\n<code>/register</code> register · <code>/perfil</code> wallet · <code>/daily</code> reward\n<code>/minar</code> mine · <code>/pescar</code> fish · <code>/ruleta</code> roulette\n<code>/transferir</code> transfer · <code>/tienda</code> shop · <code>/inventario</code> inventory",
-    "general": "⭐ <b>General commands</b>\n\n<code>/ping</code> · <code>/id</code> · <code>/rules</code> · <code>/stats</code>\n<code>/report</code> · <code>/ticket</code> · <code>/letra artist song</code> · <code>/calcular expression</code>",
-    "moderation": "🚨 <b>Moderation</b>\n\nReply to a user: <code>/warn reason</code> · <code>/mute 10m</code> · <code>/bang reason</code>\n<code>/unwarn</code> · <code>/unmute</code> · <code>/unbang ID</code> · <code>/acciones</code>\nUse the administrative buttons below for the full control center.",
-    "settings": "⚙️ <b>Group settings</b>\n\nUse the administrative buttons below.\n<code>/antilink on|off</code> · <code>/antiflood on|off</code> · <code>/captcha on|off</code>\n<code>/noche on 22:00 07:00 America/Santiago</code> · <code>/noche off</code>\n<code>/antiraid on 8 30</code> · <code>/antiraid off</code>\n<code>/setwelcome text</code> · <code>/setrules text</code> · <code>/setlogchannel ID</code>\n<code>/canalobligatorio @channel</code> · <code>/autolimpieza 15</code> · <code>/idioma es|en</code>",
-    "staff": "🛡 <b>Staff</b>\n\n<code>/staff</code> · <code>/admins</code> · <code>/promotebtn</code> · <code>/demote</code>\n<code>/staffnick Name</code> · <code>/staffrole Role</code> · <code>/infouser</code>",
-    "grouptools": "🧰 <b>Advanced group tools</b>\n\nNotes: <code>/save</code> · <code>/get</code> · <code>/notes</code>\nCustom commands: <code>/setcmd</code> · <code>/mycmds</code>\nAuto replies: <code>/filter</code> · <code>/filters</code> · <code>/stop</code>\nGiveaways: <code>/sorteo 10m Prize</code> · Levels: <code>/perfil</code>\nSchedules: <code>/programar 30m Message</code> · Polls: <code>/encuesta Question | Yes | No</code>\nConfiguration: <code>/exportarconfig</code> · <code>/importarconfig</code>",
-    "guide": "📖 <b>Administrator guide</b>\n\n1. Add the bot as administrator.\n2. Disable privacy mode in BotFather.\n3. Open <code>/menu</code> and choose Settings.\n4. Configure a log channel.\n5. Use the administrative buttons to review reports and tickets.",
+    "downloads": (
+        "📥 <b>Music and videos</b>\n\n"
+        "🎵 <code>/play song</code> — search and download audio\n"
+        "🎬 <code>/playvideo name or link</code> — find or download a video\n"
+        "📄 <code>/playdoc name or link</code> — send video as a document\n"
+        "🎶 <code>/tiktok link</code> · 📸 <code>/instagram link</code> · 📘 <code>/facebook link</code>\n\n"
+        "You can also send a TikTok, Reel, or YouTube Shorts link directly.\n"
+        "📥 <code>/cola</code> — queue and progress\n"
+        "⭐ <code>/favoritos</code> — saved media\n"
+        "📚 <code>/historial</code> — recent downloads\n"
+        "📊 <code>/estadisticasbot</code> — download statistics"
+    ),
+    "economy": (
+        "🎮 <b>Economy and games</b>\n\n"
+        "👤 <code>/register</code> — create your account\n"
+        "💼 <code>/perfil</code> — balance, XP, and level\n"
+        "🎴 <code>/tarjeta</code> — profile card\n"
+        "🎁 <code>/daily</code> — daily reward\n"
+        "🎯 <code>/misiones</code> — goals and rewards\n"
+        "⛏ <code>/minar</code> · 🎣 <code>/pescar</code> — earn soles\n"
+        "🎰 <code>/tragamonedas</code> or <code>/ruleta</code>\n"
+        "💸 <code>/transferir amount</code> — reply to a user\n"
+        "🛍 <code>/tienda</code> · <code>/comprar item</code>\n"
+        "🎒 <code>/inventario</code> — your items\n"
+        "🏆 <code>/ranksoles</code> · <code>/ranknivel</code> · <code>/rankrep</code>"
+    ),
+    "general": (
+        "⭐ <b>General commands</b>\n\n"
+        "🏓 <code>/ping</code> — check response time\n"
+        "🆔 <code>/id</code> — user and chat IDs\n"
+        "📜 <code>/rules</code> — group rules\n"
+        "📊 <code>/stats</code> — group statistics\n"
+        "🚩 <code>/report reason</code> — reply to a message to report it\n"
+        "🎫 <code>/ticket reason</code> — ask for help\n"
+        "📬 <code>/miscasos</code> — check tickets and suggestions\n"
+        "🎤 <code>/letra artist song</code> — find lyrics\n"
+        "🧮 <code>/calcular 2*(5+3)</code> — calculator\n\n"
+        "💡 Use the suggestion button below to send an idea.\n"
+        "💳 <code>/me</code> · <code>/me ID</code> — check your account or another user"
+    ),
+    "moderation": (
+        "🚨 <b>Moderation</b>\n\n"
+        "Reply to a user and use:\n"
+        "⚠️ <code>/warn reason</code> · <code>/unwarn</code> · <code>/warns</code>\n"
+        "🔇 <code>/mute 10m reason</code> · <code>/unmute</code>\n"
+        "⛔ <code>/bang reason</code> · <code>/unbang ID</code>\n"
+        "🎛 <code>/acciones</code> — quick actions\n"
+        "📋 <code>/logs</code> · <code>/reports</code> · <code>/tickets</code>\n"
+        "You can also target a user by ID: <code>/warn ID reason</code> or <code>/mute ID 10m reason</code>.\n"
+        "🗂 <code>/sanciones ID</code> — group moderation history\n"
+        "💬 <code>/responderticket ID reply</code>"
+    ),
+    "settings": (
+        "⚙️ <b>Group settings</b>\n\n"
+        "Only group admins can change these settings. Each group has its own configuration.\n"
+        "🔗 <code>/antilink on|off</code> · ⚡ <code>/antiflood on|off</code> · 🛡 <code>/captcha on|off</code>\n"
+        "👋 <code>/setwelcome text {name}</code> · 🖼 <code>/setwelcomemedia</code> — reply with a photo or GIF\n"
+        "📜 <code>/setrules text</code> · 🧹 <code>/addbadword word</code> · <code>/delbadword word</code>\n"
+        "🌙 <code>/noche on 22:00 07:00 America/Santiago</code> · <code>/noche off</code>\n"
+        "🚨 <code>/antiraid on 8 30</code> · <code>/antiraid off</code>\n"
+        "📡 <code>/setlogchannel ID</code> · 📢 <code>/canalobligatorio @channel</code>\n"
+        "📊 <code>/statssemanales on|off</code> · 🧹 <code>/autolimpieza 15</code>\n"
+        "📦 <code>/exportarconfig</code> · <code>/importarconfig</code>\n"
+        "🌐 <code>/idioma es|en</code> — change this menu's language"
+    ),
+    "staff": (
+        "🛡 <b>Staff and administration</b>\n\n"
+        "👥 <code>/staff</code> · <code>/admins</code> — list the team\n"
+        "⬆️ <code>/promotebtn</code> — promote with buttons\n"
+        "⬇️ <code>/demote</code> — reply to the admin to remove their role\n"
+        "🏷 <code>/staffnick Name</code> — set a staff nickname\n"
+        "🎖 <code>/staffrole Role</code> — set a staff role\n"
+        "👤 <code>/infouser</code> — moderation profile"
+    ),
+    "grouptools": (
+        "🧰 <b>Advanced group tools</b>\n\n"
+        "🗒 Notes: <code>/save name text</code> · <code>/get name</code> · <code>/notes</code>\n"
+        "⚡ Custom commands: <code>/setcmd name reply</code> · <code>/mycmds</code> · <code>/delcmd name</code>\n"
+        "🧩 Auto replies: <code>/filter</code> · <code>/filters</code> · <code>/stop word</code>\n"
+        "📌 <code>/pin</code> · <code>/unpin</code> · <code>/unpinall</code> · 🐢 <code>/slowmode 10</code>\n"
+        "🔒 <code>/bloquear photos</code> · <code>/desbloquear photos</code> · <code>/bloqueos</code>\n"
+        "🔗 <code>/whitelistlink youtube.com</code> · <code>/whitelistlinks</code>\n"
+        "👤 <code>/whitelistuser ID</code> · <code>/whitelistusers</code>\n\n"
+        "🎉 <code>/sorteo 10m Prize</code> · <code>/finalizarsorteo ID</code>\n"
+        "📊 <code>/actividad</code> · <code>/rankactividad</code> · ⭐ <code>/perfil</code>\n"
+        "🗓 <code>/programar 30m Message</code> · <code>/programados</code>\n"
+        "📊 <code>/encuesta Question | Yes | No</code>\n"
+        "📋 <code>/copiarconfig SOURCE_ID</code> — run this in the destination group"
+    ),
+    "guide": (
+        "📖 <b>Quick guide for group admins</b>\n\n"
+        "1️⃣ Add the bot as an administrator and grant the permissions it needs.\n"
+        "2️⃣ Open <code>/menu</code> and choose Group settings.\n"
+        "3️⃣ Set up logs with <code>/setlogchannel ID</code>.\n"
+        "4️⃣ Reply to a user's message and use <code>/acciones</code> to moderate.\n"
+        "5️⃣ Review open reports and tickets in the admin panel.\n\n"
+        "🔐 <b>Private owner tools</b>\n"
+        "• <code>/backup</code> — create a backup now\n"
+        "• <code>/estado</code> — service health, memory, disk, and groups\n"
+        "• <code>/exportargrupo ID</code> — export a group configuration\n"
+        "• <code>/descargaslibres ID</code> · <code>/quitarlibre ID</code>\n"
+        "• <code>/usuarioslibres</code> · <code>/paneldescargas</code>\n"
+        "• Reply to a .db file with <code>/restaurar</code>\n"
+        "• <code>/cancelar</code> — cancel an operation"
+    ),
 }
 
 
@@ -177,10 +274,12 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
     if section == "home":
         home_actions = (
             [("💳 Services", "unified:0:catalog"), ("📝 Register", "unified:0:register"),
-             ("👤 My profile", "unified:0:profile"), ("📚 My history", "unified:0:historymenu")]
+             ("🛍️ Store", "unified:0:buy"), ("👤 My profile", "unified:0:profile"),
+             ("📚 My history", "unified:0:historymenu")]
             if language == "en" else
             [("💳 Consultas y servicios", "unified:0:catalog"), ("📝 Crear cuenta gratis", "unified:0:register"),
-             ("👤 Mi perfil", "unified:0:profile"), ("📚 Mi historial", "unified:0:historymenu")]
+             ("🛍️ Tienda", "unified:0:buy"), ("👤 Mi perfil", "unified:0:profile"),
+             ("📚 Mi historial", "unified:0:historymenu")]
         )
         for label, callback_data in home_actions:
             builder.button(text=label, callback_data=callback_data)
@@ -189,18 +288,15 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
                 continue
             builder.button(text=label, callback_data=f"mainmenu:{key}")
         if role != "user":
-            label = "🛍️ Store" if language == "en" else "🛍️ Tienda"
-            builder.button(text=label, callback_data="unified:0:buy")
             label = "🎛 Admin panel" if language == "en" else "🎛 Panel de administración"
             builder.button(text=label, callback_data="unified:0:paneladmin")
+    if section == "general":
         label = "💡 Send suggestion" if language == "en" else "💡 Enviar sugerencia"
         builder.button(text=label, callback_data="suggest:start")
-    if role != "user" and section in {"settings", "moderation", "staff", "grouptools"}:
+    if role != "user" and section in {"moderation", "staff", "grouptools"}:
         builder.button(text="\U0001f39b Admin panel" if language == "en" else "\U0001f39b Panel de administración", callback_data="unified:0:paneladmin")
     if section == "downloads" and role == "owner":
         builder.button(text="📥 Download panel" if language == "en" else "📥 Panel de descargas", callback_data="downloads:panel")
-    if role == "owner" and section == "home":
-        builder.button(text="\U0001f451 Download controls" if language == "en" else "\U0001f451 Control de descargas", callback_data="downloads:panel")
     if role != "user" and section == "settings":
         builder.button(text="\U0001fa84 Guided setup" if language == "en" else "\U0001fa84 Configuración guiada", callback_data="setup:home")
     if section != "home":

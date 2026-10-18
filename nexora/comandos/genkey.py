@@ -6,7 +6,7 @@ from urllib import parse as _urlparse
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json
+from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -113,7 +113,7 @@ async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"❌ {html.escape(err)}", parse_mode="HTML")
             return
 
-    status, data = fetch_api_json(
+    status, data = await fetch_api_json_async(
         "/keys/generate",
         method="POST",
         payload={
@@ -163,7 +163,7 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     key_input = context.args[0].strip().upper()
-    status, data = fetch_api_json(
+    status, data = await fetch_api_json_async(
         "/keys/redeem",
         method="POST",
         payload={"key": key_input, "ID_TG": user.id},
@@ -200,7 +200,7 @@ async def keyslog(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❌ API_BASE no está configurada.")
         return
 
-    status, data = fetch_api_json("/keys/log?limit=15")
+    status, data = await fetch_api_json_async("/keys/log?limit=15")
     if status != 200 or data.get("status") != "ok":
         await msg.reply_text(f"❌ Error consultando canjes: {html.escape(str(data.get('message', status)))}", parse_mode="HTML")
         return
@@ -234,7 +234,7 @@ async def keysinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     key_input = context.args[0].strip().upper()
-    status, data = fetch_api_json(f"/keys/info?key={_urlparse.quote(key_input)}")
+    status, data = await fetch_api_json_async(f"/keys/info?key={_urlparse.quote(key_input)}")
     if status != 200 or data.get("status") != "ok":
         await msg.reply_text(f"❌ {html.escape(str(data.get('message', 'Key no encontrada')))}", parse_mode="HTML")
         return

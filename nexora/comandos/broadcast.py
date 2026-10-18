@@ -139,7 +139,7 @@ async def global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "created": asyncio.get_running_loop().time(),
     }
     preview_lines = [
-        "<b>NEXORA ONE ⇒ PREVIEW GLOBAL</b>",
+        "📣 <b>NEXORA ONE · VISTA PREVIA DEL ENVÍO</b>",
         "",
         f"Alcance: <code>{html.escape(scope)}</code>",
         f"Usuarios destino: <code>{len(users)}</code>",
@@ -151,8 +151,8 @@ async def global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Confirmar envío", callback_data=f"global_confirm:{token}"),
-                InlineKeyboardButton("Cancelar", callback_data=f"global_cancel:{token}"),
+                InlineKeyboardButton("✅ Confirmar envío", callback_data=f"global_confirm:{token}"),
+                InlineKeyboardButton("↩️ Cancelar", callback_data=f"global_cancel:{token}"),
             ]
         ]
     )
@@ -183,15 +183,15 @@ async def global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending.pop(token, None)
         await query.answer("Este envío expiró.", show_alert=True)
         try:
-            await query.edit_message_text("Mensaje global expirado. Vuelve a usar /global.")
+            await query.edit_message_text("⌛ El envío venció. Vuelve a usar /global para preparar uno nuevo.")
         except Exception:
             pass
         return
     if action == "global_cancel":
         pending.pop(token, None)
-        await query.answer("Cancelado.")
+        await query.answer("Envío cancelado.")
         try:
-            await query.edit_message_text("Mensaje global cancelado.")
+            await query.edit_message_text("↩️ Envío cancelado. No se envió a ningún usuario.")
         except Exception:
             pass
         return
@@ -200,9 +200,9 @@ async def global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     pending.pop(token, None)
-    await query.answer("Enviando...")
+    await query.answer("Enviando el mensaje…")
     try:
-        progress = await query.edit_message_text(f"Enviando mensaje global a {len(job['users'])} usuarios...")
+        progress = await query.edit_message_text(f"📨 Enviando a {len(job['users'])} usuarios…")
     except Exception:
         progress = query.message
 
@@ -229,7 +229,7 @@ async def global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     details = ", ".join(f"{html.escape(k)}: {v}" for k, v in sorted(failed_reasons.items())) or "—"
     result = (
-        "<b>NEXORA ONE ⇒ GLOBAL FINALIZADO</b>\n\n"
+        "✅ <b>NEXORA ONE · ENVÍO FINALIZADO</b>\n\n"
         f"Alcance: <code>{html.escape(scope)}</code>\n"
         f"Usuarios: <code>{len(users)}</code>\n"
         f"Enviados: <code>{ok}</code>\n"

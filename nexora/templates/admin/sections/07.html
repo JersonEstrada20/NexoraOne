@@ -1,0 +1,75 @@
+      {% if active_section == 'vendedores' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Vendedores</h2>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+          <input type="hidden" name="section" value="vendedores">
+          <input name="vq" value="{{ vendor_q }}" placeholder="Buscar por ID vendedor">
+          <input name="vendor" value="{{ selected_vendor }}" placeholder="Ver detalle exacto de vendedor">
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary">
+          <div class="metric"><span class="pill">Vendedores</span><h3>{{ vendor_total }}</h3><div class="small">Coincidencias del filtro</div></div>
+          <div class="metric"><span class="pill">Ventas</span><h3>{{ vendor_total_sales }}</h3><div class="small">Total del ranking visible</div></div>
+          <div class="metric"><span class="pill">Detalle</span><h3>{{ vendor_detail_total }}</h3><div class="small">Ventas del vendedor elegido</div></div>
+          <div class="metric"><span class="pill">Último</span><h3>{{ selected_vendor or '—' }}</h3><div class="small">Vendedor en foco</div></div>
+        </div>
+      </div>
+      <div class="section-grid">
+      <div class="card">
+        <h2>Ranking</h2>
+        <table>
+          <thead><tr><th>Vendedor</th><th>Ventas</th><th>Última venta</th><th>Ver</th></tr></thead>
+          <tbody>
+            {% if vendor_summary %}
+              {% for item in vendor_summary %}
+              <tr>
+                <td><strong>{{ item.vendedor }}</strong></td>
+                <td>{{ item.total_ventas }}</td>
+                <td>{{ item.ultima_venta or '—' }}</td>
+                <td><a href="{{ url_for('admin_panel', section='vendedores', vendor=item.vendedor, vq=vendor_q) }}">Abrir</a></td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="4">No hay ventas registradas para ese filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div class="small">Página {{ vendor_page }}/{{ vendor_total_pages }}</div>
+          <div>
+            {% if vendor_page > 1 %}<a href="{{ url_for('admin_panel', section='vendedores', vq=vendor_q, vendor=selected_vendor, vendor_page=vendor_page-1, vendor_detail_page=vendor_detail_page) }}">Anterior</a>{% endif %}
+            {% if vendor_page < vendor_total_pages %}<a href="{{ url_for('admin_panel', section='vendedores', vq=vendor_q, vendor=selected_vendor, vendor_page=vendor_page+1, vendor_detail_page=vendor_detail_page) }}" class="u-ml-12">Siguiente</a>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Detalle de ventas</h2>
+        <div class="small u-mb-12">Mostrando ventas para: <strong>{{ selected_vendor or '—' }}</strong></div>
+        <table>
+          <thead><tr><th>Cliente</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+          <tbody>
+            {% if vendor_detail %}
+              {% for row in vendor_detail %}
+              <tr>
+                <td>{{ row.ID_TG }}</td>
+                <td>{{ row.COMPRO or '—' }}</td>
+                <td>{{ row.FECHA or '—' }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="3">Selecciona un vendedor para ver detalle.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div class="small">Mostrando {{ vendor_detail|length }} de {{ vendor_detail_total }} ventas. Página {{ vendor_detail_page }}/{{ vendor_detail_total_pages }}</div>
+          <div>
+            {% if vendor_detail_page > 1 %}<a href="{{ url_for('admin_panel', section='vendedores', vq=vendor_q, vendor=selected_vendor, vendor_page=vendor_page, vendor_detail_page=vendor_detail_page-1) }}">Anterior</a>{% endif %}
+            {% if vendor_detail_page < vendor_detail_total_pages %}<a href="{{ url_for('admin_panel', section='vendedores', vq=vendor_q, vendor=selected_vendor, vendor_page=vendor_page, vendor_detail_page=vendor_detail_page+1) }}" class="u-ml-12">Siguiente</a>{% endif %}
+          </div>
+        </div>
+      </div>
+      </div>
+      </div>
+      {% endif %}

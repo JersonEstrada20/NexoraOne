@@ -9,7 +9,7 @@ from urllib import parse as _urlparse
 
 from telegram import Update, InputFile
 from telegram.ext import ContextTypes
-from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json, fetch_api_json_async
+from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -86,27 +86,26 @@ def _extract_first_number(text: str | None) -> int | None:
 _ALLOWED_ROLES = {"FUNDADOR", "CO-FUNDADOR", "SELLER"}
 
 
-def _get_user_info(id_tg: str):
-    return fetch_api_json(f"/tg_info?ID_TG={_urlparse.quote(id_tg)}")
-
-
 async def _get_user_info_async(id_tg: str):
     return await fetch_api_json_async(f"/tg_info?ID_TG={_urlparse.quote(id_tg)}")
 
 
 def _get_remote_settings() -> dict:
+    return _SETTINGS_CACHE["data"] or {}
+
+
+async def _refresh_remote_settings() -> dict:
     now = time.monotonic()
     if _SETTINGS_CACHE["data"] is not None and now - float(_SETTINGS_CACHE["ts"]) < 30:
         return _SETTINGS_CACHE["data"]
     if not API_BASE:
-        return {}
-    st, js = fetch_api_json("/bot_catalog", timeout=12)
+        return _SETTINGS_CACHE["data"] or {}
+    st, js = await fetch_api_json_async("/bot_catalog", timeout=12)
     if st == 200 and js.get("status") == "ok":
         data = ((js.get("data") or {}).get("settings") or {})
         _SETTINGS_CACHE["ts"] = now
         _SETTINGS_CACHE["data"] = data
-        return data
-    return {}
+    return _SETTINGS_CACHE["data"] or {}
 
 
 def _bot_brand() -> str:
@@ -301,6 +300,7 @@ async def compras_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filas = js_c.get("data", []) or []
 
+    await _refresh_remote_settings()
     pretty_bot = _bot_brand()
     data_bytes = _build_compras_txt(pretty_bot, target_id, filas)
     filename = f"compras_{target_id}.txt"

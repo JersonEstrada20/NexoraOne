@@ -1,0 +1,111 @@
+      {% if active_section == 'keys' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Keys</h2>
+        <p class="small">Genera keys desde el panel o desde Telegram con <code>/genkey dias 12</code> y <code>/genkey creditos 100</code>.</p>
+        <form method="post" action="{{ url_for('admin_generate_keys') }}" class="inline u-mt-14">
+          <select name="tipo" required>
+            <option value="creditos">Créditos</option>
+            <option value="dias">Días</option>
+          </select>
+          <input name="cantidad" type="number" min="1" value="100" placeholder="Cantidad" required>
+          <input name="usos" type="number" min="1" value="1" placeholder="Usos por key" required>
+          <input name="total" type="number" min="1" max="100" value="1" placeholder="Total keys" required>
+          <button type="submit">Generar keys</button>
+        </form>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mt-14">
+          <input type="hidden" name="section" value="keys">
+          <input name="key_q" value="{{ key_q }}" placeholder="Buscar key o creador">
+          <select name="key_tipo">
+            <option value="">Todos los tipos</option>
+            <option value="creditos" {% if key_tipo == 'creditos' %}selected{% endif %}>Créditos</option>
+            <option value="dias" {% if key_tipo == 'dias' %}selected{% endif %}>Días</option>
+          </select>
+          <select name="key_status">
+            <option value="">Todos los estados</option>
+            <option value="available" {% if key_status == 'available' %}selected{% endif %}>Disponibles</option>
+            <option value="used" {% if key_status == 'used' %}selected{% endif %}>Agotadas</option>
+          </select>
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary u-mt-14">
+          <div class="metric"><span class="pill">Total</span><h3>{{ key_counts.total }}</h3><div class="small">Keys creadas</div></div>
+          <div class="metric"><span class="pill">Disponibles</span><h3>{{ key_counts.available }}</h3><div class="small">Con usos restantes</div></div>
+          <div class="metric"><span class="pill">Agotadas</span><h3>{{ key_counts.used }}</h3><div class="small">Sin usos</div></div>
+          <div class="metric"><span class="pill">Canjes</span><h3>{{ key_counts.redemptions }}</h3><div class="small">Total registrado</div></div>
+        </div>
+        <div class="subnav">
+          <a href="{{ url_for('admin_export_keys_csv', key_q=key_q, key_tipo=key_tipo, key_status=key_status) }}">Exportar CSV</a>
+          <a href="{{ url_for('admin_export_keys_json', key_q=key_q, key_tipo=key_tipo, key_status=key_status) }}">Exportar JSON</a>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Listado de keys</h2>
+        <table>
+          <thead><tr><th>Key</th><th>Tipo</th><th>Cantidad</th><th>Usos</th><th>Canjes</th><th>Creador</th><th>Fecha</th><th>Acciones</th></tr></thead>
+          <tbody>
+            {% for item in key_items %}
+            <tr>
+              <td><strong>{{ item.key }}</strong></td>
+              <td>{{ item.tipo }}</td>
+              <td>{{ item.cantidad }}</td>
+              <td><span class="badge {% if item.usos > 0 %}ok{% else %}off{% endif %}">{{ item.usos }}</span></td>
+              <td>{{ item.canjes }}</td>
+              <td>{{ item.creador_id }}</td>
+              <td>{{ item.fecha_creacion or '—' }}</td>
+              <td>
+                <form method="post" action="{{ url_for('admin_update_key') }}" class="u-key-form">
+                  <input type="hidden" name="key" value="{{ item.key }}">
+                  <input type="number" name="usos" min="0" value="{{ item.usos }}">
+                  <button type="submit" name="action" value="set_uses">Guardar usos</button>
+                  <button type="submit" name="action" value="revoke" class="danger">Revocar</button>
+                </form>
+                <form method="post" action="{{ url_for('admin_delete_key') }}" data-confirm="¿Eliminar la key {{ item.key }}? También se eliminarán sus canjes registrados.">
+                  <input type="hidden" name="key" value="{{ item.key }}">
+                  <button type="submit" class="danger">Eliminar key</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if not key_items %}
+            <tr><td colspan="8">Sin keys para este filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+          <div class="pager">
+            <div class="small">Mostrando {{ key_items|length }} de {{ key_total }} keys. Página {{ key_page }}/{{ key_total_pages }}</div>
+            <div>
+              {% if key_page > 1 %}<a href="{{ url_for('admin_panel', section='keys', key_q=key_q, key_tipo=key_tipo, key_status=key_status, key_page=key_page-1, redemption_page=redemption_page) }}">Anterior</a>{% endif %}
+              {% if key_page < key_total_pages %}<a href="{{ url_for('admin_panel', section='keys', key_q=key_q, key_tipo=key_tipo, key_status=key_status, key_page=key_page+1, redemption_page=redemption_page) }}" class="u-ml-12">Siguiente</a>{% endif %}
+            </div>
+          </div>
+      </div>
+      <div class="card">
+        <h2>Últimos canjes</h2>
+        <table>
+          <thead><tr><th>Key</th><th>Usuario</th><th>Tipo</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+          <tbody>
+            {% for row in key_redemptions %}
+            <tr>
+              <td><strong>{{ row.key }}</strong></td>
+              <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.user_id) }}">{{ row.user_id }}</a></td>
+              <td>{{ row.tipo }}</td>
+              <td>{{ row.cantidad }}</td>
+              <td>{{ row.fecha_canje or '—' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not key_redemptions %}
+            <tr><td colspan="5">No hay canjes registrados.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+          <div class="pager">
+            <div class="small">Mostrando {{ key_redemptions|length }} de {{ redemption_total }} canjes. Página {{ redemption_page }}/{{ redemption_total_pages }}</div>
+            <div>
+              {% if redemption_page > 1 %}<a href="{{ url_for('admin_panel', section='keys', key_q=key_q, key_tipo=key_tipo, key_status=key_status, key_page=key_page, redemption_page=redemption_page-1) }}">Anterior</a>{% endif %}
+              {% if redemption_page < redemption_total_pages %}<a href="{{ url_for('admin_panel', section='keys', key_q=key_q, key_tipo=key_tipo, key_status=key_status, key_page=key_page, redemption_page=redemption_page+1) }}" class="u-ml-12">Siguiente</a>{% endif %}
+            </div>
+          </div>
+      </div>
+      </div>
+      {% endif %}

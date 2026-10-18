@@ -6,14 +6,16 @@ Bot de Telegram **@NexoraOneRoBot** y panel web para administrar usuarios, solic
 
 ## Estado del despliegue
 
-La migración a Northflank está en preparación. **Hasta completar el corte, Oracle Cloud sigue siendo producción y el bot de Oracle no se debe apagar.** La arquitectura destino usa dos servicios del repositorio de GitHub:
+Northflank es el entorno principal: el bot y la web se despliegan desde este repositorio y comparten la base remota existente de Turso. La rama `deploy/northflank-migration` es la que se ha usado para los servicios actuales. No inicialices ni importes otra base durante una actualización.
+
+La arquitectura tiene dos servicios del repositorio de GitHub:
 
 - **Bot**: servicio `nexoraone`, ejecuta `/Dockerfile` y usa long polling de Telegram; debe tener una sola réplica.
 - **Web**: servicio `nexoraoneweb`, ejecuta `/Dockerfile.web`, sirve el panel y la API por HTTP 8080.
 - **Base de datos**: bot y web usan la misma base remota existente de Turso. No se importan datos ni se crea una segunda base.
 - **Acceso al panel**: la web obtiene un dominio HTTPS de Northflank; el bot usa la dirección privada del servicio web.
 
-Sigue [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md) para la migración, validación y reversión. [DEPLOY-ORACLE.md](DEPLOY-ORACLE.md) queda como guía de respaldo. No compartas archivos `.env`, tokens de Telegram, tokens de Turso ni claves internas.
+Consulta [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md) como guía de configuración y recuperación. [DEPLOY-ORACLE.md](DEPLOY-ORACLE.md) documenta la instalación anterior y solo sirve como referencia si aún conservas esa VM. No ejecutes dos copias del bot con long polling a la vez. No compartas archivos `.env`, tokens de Telegram, tokens de Turso ni claves internas.
 
 ## Funciones
 
@@ -59,7 +61,7 @@ Para ejecutar la web localmente, configura `NEXORA_PANEL_SECRET`, `NEXORA_PANEL_
 
 En producción, bot y web deben tener `DATABASE_BACKEND=turso` y los mismos `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`. La web también requiere una `NEXORA_PANEL_SECRET` estable. El bot necesita la URL HTTPS de la web en `NEXORA_API_BASE` y la misma `NEXORA_INTERNAL_API_KEY` configurada en la web.
 
-La base productiva ya está inicializada. **No vuelvas a inicializar ni importes otra base durante la migración.** Los dos servicios de Northflank deben usar la misma URL y token de Turso que la producción actual.
+La base productiva ya está inicializada. **No vuelvas a inicializar ni importes otra base durante una actualización.** Los dos servicios de Northflank deben usar la misma URL y token de Turso que la producción actual.
 
 ## Verificación
 

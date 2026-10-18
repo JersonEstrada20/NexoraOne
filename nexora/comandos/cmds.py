@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from nexora.storage import db_path
-from nexora.comandos.utils import default_asset_url, fetch_api_json
+from nexora.comandos.utils import default_asset_url, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -102,22 +102,19 @@ def _load_cfg():
     return CFG or {}
 
 
-def _fetch_api_json(path: str, timeout: int = 15):
-    status, data = fetch_api_json(path, timeout=timeout)
-    return data if status == 200 else None
-
-
 def _get_remote_catalog():
+    return _CATALOG_CACHE["data"]
+
+
+async def _refresh_remote_catalog():
     now = time.monotonic()
     if _CATALOG_CACHE["data"] is not None and now - float(_CATALOG_CACHE["ts"]) < 30:
         return _CATALOG_CACHE["data"]
-    js = _fetch_api_json("/bot_catalog")
-    if js and js.get("status") == "ok":
-        data = js.get("data") or {}
-        _CATALOG_CACHE["ts"] = now
-        _CATALOG_CACHE["data"] = data
-        return data
-    return None
+    status, response = await fetch_api_json_async("/bot_catalog", timeout=15)
+    if status == 200 and response.get("status") == "ok":
+        _CATALOG_CACHE["ts"] = time.monotonic()
+        _CATALOG_CACHE["data"] = response.get("data") or {}
+    return _CATALOG_CACHE["data"]
 
 
 def _bot_brand(cfg: dict) -> str:
@@ -357,30 +354,34 @@ def _kb_home(categories: list[dict]):
 
 def _kb_category_nav(category_slug: str, page: int, total_pages: int):
     if total_pages <= 1:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("📂 Volver a categorías", callback_data="cmds_nav_home")]])
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("📂 Categorías", callback_data="cmds_nav_home"),
+            InlineKeyboardButton("🏠 Menú principal", callback_data="mainmenu:home"),
+        ]])
     prev_page = total_pages if page <= 1 else page - 1
     next_page = 1 if page >= total_pages else page + 1
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⬅️", callback_data=f"cmds_cat_{category_slug}_{prev_page}"),
-            InlineKeyboardButton("📂 Categorías", callback_data="cmds_nav_home"),
-            InlineKeyboardButton("➡️", callback_data=f"cmds_cat_{category_slug}_{next_page}"),
-        ]
+        [InlineKeyboardButton("⬅️ Anterior", callback_data=f"cmds_cat_{category_slug}_{prev_page}"),
+         InlineKeyboardButton("Siguiente ➡️", callback_data=f"cmds_cat_{category_slug}_{next_page}")],
+        [InlineKeyboardButton("📂 Categorías", callback_data="cmds_nav_home"),
+         InlineKeyboardButton("🏠 Menú principal", callback_data="mainmenu:home")],
     ])
 
 
 def _kb_search_nav(query: str, page: int, total_pages: int):
     safe_query = query[:48].replace(":", " ").strip()
     if total_pages <= 1:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("📂 Volver al catálogo", callback_data="cmds_nav_home")]])
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("📂 Catálogo", callback_data="cmds_nav_home"),
+            InlineKeyboardButton("🏠 Menú principal", callback_data="mainmenu:home"),
+        ]])
     prev_page = total_pages if page <= 1 else page - 1
     next_page = 1 if page >= total_pages else page + 1
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⬅️", callback_data=f"cmds_search_{prev_page}_{safe_query}"),
-            InlineKeyboardButton("📂 Catálogo", callback_data="cmds_nav_home"),
-            InlineKeyboardButton("➡️", callback_data=f"cmds_search_{next_page}_{safe_query}"),
-        ]
+        [InlineKeyboardButton("⬅️ Anterior", callback_data=f"cmds_search_{prev_page}_{safe_query}"),
+         InlineKeyboardButton("Siguiente ➡️", callback_data=f"cmds_search_{next_page}_{safe_query}")],
+        [InlineKeyboardButton("📂 Catálogo", callback_data="cmds_nav_home"),
+         InlineKeyboardButton("🏠 Menú principal", callback_data="mainmenu:home")],
     ])
 
 
@@ -508,6 +509,7 @@ async def _send_or_edit_menu(message_or_query, text: str, markup, image_url: str
 
 
 async def cmds_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _refresh_remote_catalog()
     cfg = _load_cfg()
     query = " ".join(context.args or []).strip()
     if query:
@@ -532,6 +534,8 @@ async def cmds_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer("Actualizando catálogo…")
+    await _refresh_remote_catalog()
     data = query.data or ""
     cfg = _load_cfg()
     categories = _get_categories()
@@ -544,7 +548,6 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _get_menu_image(cfg),
             edit=True,
         )
-        await query.answer()
         return
 
     if data.startswith("cmds_cat_"):
@@ -559,7 +562,8 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         category = next((c for c in categories if c["slug"] == category_slug), None)
         if not category:
-            await query.answer("Categoría no disponible.", show_alert=True)
+            if query.message:
+                await query.message.reply_text("Esa categoría ya no está disponible. Abre /cmds para ver las actuales.")
             return
 
         commands = _get_commands_by_category(category_slug)
@@ -573,7 +577,6 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _get_menu_image(cfg),
             edit=True,
         )
-        await query.answer()
         return
 
     if data.startswith("cmds_search_"):
@@ -601,7 +604,7 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BadRequest as exc:
             if "Message is not modified" not in str(exc) and query.message:
                 await query.message.reply_text(text=text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-        await query.answer()
         return
 
-    await query.answer("Esta opción del catálogo ya no está disponible. Abre /cmds para ver los botones actuales.", show_alert=True)
+    if query.message:
+        await query.message.reply_text("Esta opción del catálogo ya no está disponible. Abre /cmds para ver los botones actuales.")

@@ -1,13 +1,13 @@
-# Operación en Oracle Cloud
+# Referencia histórica: operación en Oracle Cloud
 
-Este es el procedimiento para la instalación actual: una VM con Docker Compose, dos contenedores (`bot` y `web`) y Turso como base remota compartida. La configuración Compose está en [compose.yaml](compose.yaml).
+Esta guía describe la instalación anterior: una VM con Docker Compose, dos contenedores (`bot` y `web`) y Turso como base remota compartida. Northflank es ahora el entorno principal. Conserva estos pasos solo si aún tienes recursos Oracle que quieras recuperar; no arranques otra copia del bot mientras el bot de Northflank esté activo. La configuración Compose está en [compose.yaml](compose.yaml).
 
 ## Servicios y acceso
 
 - `bot` inicia el bot con long polling; debe ejecutarse en una sola instancia.
 - `web` expone el panel y la API dentro de Compose en el puerto `8080`. En el host, Compose lo publica solo en `127.0.0.1:8080`.
 - Turso conserva los datos fuera de los contenedores. Ambos servicios necesitan la misma URL y token.
-- Cloudflare Quick Tunnel proporciona el acceso público actual al panel. Su URL temporal puede cambiar si el túnel se reinicia. No uses una dirección `trycloudflare.com` como dirección permanente.
+- La instalación anterior usaba Cloudflare Quick Tunnel para el panel. Su URL temporal podía cambiar al reiniciar el túnel; no la uses como dirección permanente.
 
 ## Secretos y configuración
 

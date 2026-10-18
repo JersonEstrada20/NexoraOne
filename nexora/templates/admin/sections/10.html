@@ -1,0 +1,297 @@
+      {% if active_section == 'categorias' or active_section == 'comandos' %}
+      <div class="section-grid u-grid-single">
+      <div class="stack {% if active_section == 'comandos' %}command-tools{% endif %}" id="sec-categorias">
+        {% if active_section == 'categorias' %}
+        <div class="card">
+          <h2>Nueva Categoría</h2>
+          <form method="post" action="{{ url_for('admin_save_category') }}">
+            <label>Slug</label>
+            <input name="slug" placeholder="reniec-premium" required>
+            <label>Nombre</label>
+            <input name="name" placeholder="RENIEC PREMIUM" required>
+            <label>Emoji</label>
+            <input name="icon" placeholder="🔎">
+            <label>Descripción</label>
+            <textarea name="description" placeholder="Descripción interna"></textarea>
+            <div class="inline">
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+              <div>
+                <label>Estado</label>
+                <select name="is_active">
+                  <option value="1">Activa</option>
+                  <option value="0">Inactiva</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit">Guardar categoría</button>
+          </form>
+        </div>
+        {% endif %}
+        {% if active_section == 'comandos' %}
+          <div class="card">
+            <h2>Nuevo Comando</h2>
+            <form method="post" action="{{ url_for('admin_save_command') }}">
+            <label>Slug</label>
+            <input name="slug" placeholder="dni" required>
+            <label>Nombre visible</label>
+            <input name="name" placeholder="DNI" required>
+            <label>Categoría</label>
+            <select name="category_id">
+              <option value="">Sin categoría</option>
+              {% for cat in categories %}
+              <option value="{{ cat.id }}">{{ cat.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="inline">
+              <div>
+                <label>Costo</label>
+                <input name="cost" type="number" min="0" value="1" required>
+              </div>
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+            </div>
+            <label>Plan mínimo</label>
+            <select name="required_plan">
+              <option value="FREE">Libre / todos</option>
+              <option value="BASICO">Básico</option>
+              <option value="STANDARD">Standard</option>
+              <option value="PREMIUM">Premium</option>
+            </select>
+            <div class="inline">
+              <div>
+                <label>Estado</label>
+                <select name="is_active">
+                  <option value="1">Activo</option>
+                  <option value="0">Inactivo</option>
+                </select>
+              </div>
+              <div>
+                <label>Uso</label>
+                <input name="usage_hint" placeholder="/dni 12345678">
+              </div>
+            </div>
+            <label>INFO visible en /cmds</label>
+            <textarea name="description" placeholder="Texto que saldrá en INFO dentro del menú"></textarea>
+            <label>Validación de entrada</label>
+            <div class="inline">
+              <select name="validation_type">
+                <option value="none">Sin validación</option>
+                <option value="dni">DNI: 8 dígitos</option>
+                <option value="digits">Solo números</option>
+                <option value="letters">Solo letras</option>
+                <option value="regex">Regex personalizada</option>
+                <option value="photo">Foto/archivo requerido</option>
+                <option value="photo_text">Foto/archivo + texto</option>
+              </select>
+              <input name="validation_length" placeholder="Longitud exacta, ej. 8">
+            </div>
+            <div class="inline">
+              <input name="validation_min_length" placeholder="Mínimo caracteres">
+              <input name="validation_max_length" placeholder="Máximo caracteres">
+            </div>
+            <input name="validation_regex" placeholder="Regex opcional, ej. \\d{8}">
+            <input name="validation_empty_message" placeholder="Mensaje si lo manda vacío">
+            <input name="validation_invalid_message" placeholder="Mensaje si el formato está mal">
+            <button class="secondary" type="submit">Guardar comando</button>
+            </form>
+            <p class="small">Los comandos creados aquí usan solicitud manual del bot. La validación evita cobrar o abrir solicitud cuando faltan datos o tienen mal formato.</p>
+          </div>
+          <div class="card">
+            <h2>Importación Masiva</h2>
+            <form method="post" action="{{ url_for('admin_import_commands') }}">
+              <label>Categoría para todo el bloque</label>
+              <select name="bulk_category_id">
+                <option value="">Sin categoría</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}">{{ cat.name }}</option>
+                {% endfor %}
+              </select>
+              <label>Pega una línea por comando</label>
+              <textarea name="bulk_commands" placeholder="minsa;;Descanso MINSA;;25;;/minsa DNI|CONTINGENCIA|DIAS;;Solicitud manual de descanso&#10;fotoid;;Foto ID;;10;;/fotoid + foto;;Solicitud con foto;;1;;20;;photo&#10;rucvip;;RUC VIP;;8;;/rucvip 20123456789;;Consulta RUC;;1;;30;;digits;;11;;;;;STANDARD"></textarea>
+              <p class="small">Formato recomendado: <code>slug;;nombre;;costo;;usage_hint;;info</code></p>
+              <p class="small">Si repites un <code>slug</code>, no lo duplica: lo actualiza con la nueva categoría, costo, uso e info.</p>
+              <p class="small">Opcional: agrega <code>;;estado;;orden;;validación;;longitud;;regex;;msg vacío;;msg inválido;;plan mínimo</code>. Planes: <code>FREE</code>, <code>BASICO</code>, <code>STANDARD</code>, <code>PREMIUM</code>.</p>
+              <button type="submit">Importar bloque</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      <div class="stack" id="sec-comandos">
+        {% if active_section == 'categorias' %}
+        <div class="card">
+          <h2>Categorías</h2>
+          <table>
+            <thead><tr><th>Slug</th><th>Emoji</th><th>Nombre</th><th>Orden</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody>
+              {% for cat in categories %}
+              <tr>
+                <td><strong>{{ cat.slug }}</strong><div class="small">{{ cat.description or '—' }}</div></td>
+                <td class="u-text-22">{{ cat.icon or '🧩' }}</td>
+                <td>{{ cat.name }}</td>
+                <td>{{ cat.sort_order }}</td>
+                <td>{% if cat.is_active %}<span class="badge ok">Activa</span>{% else %}<span class="badge off">Inactiva</span>{% endif %}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Editar</summary>
+                    <form method="post" action="{{ url_for('admin_save_category') }}">
+                      <input type="hidden" name="original_slug" value="{{ cat.slug }}">
+                      <div class="inline">
+                        <input name="slug" value="{{ cat.slug }}" required>
+                        <input name="icon" value="{{ cat.icon or '' }}" placeholder="Emoji">
+                      </div>
+                      <input name="name" value="{{ cat.name }}" required>
+                      <textarea name="description" placeholder="Descripción interna">{{ cat.description or '' }}</textarea>
+                      <div class="inline">
+                        <input name="sort_order" type="number" value="{{ cat.sort_order }}">
+                        <select name="is_active">
+                          <option value="1" {% if cat.is_active %}selected{% endif %}>Activa</option>
+                          <option value="0" {% if not cat.is_active %}selected{% endif %}>Inactiva</option>
+                        </select>
+                      </div>
+                      <button type="submit">Guardar</button>
+                    </form>
+                    <form method="post" action="{{ url_for('admin_delete_category') }}" data-confirm="¿Eliminar la categoría {{ cat.name }}? Los comandos quedarán sin categoría.">
+                      <input type="hidden" name="slug" value="{{ cat.slug }}">
+                      <button class="danger" type="submit">Eliminar categoría</button>
+                    </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+        {% if active_section == 'comandos' %}
+        <div class="card">
+          <h2>Comandos</h2>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+            <input type="hidden" name="section" value="comandos">
+            <input name="q" value="{{ q }}" placeholder="Buscar por slug, nombre, uso o info">
+            <select name="category">
+              <option value="">Todas las categorías</option>
+              {% for cat in categories %}
+              <option value="{{ cat.slug }}" {% if category_filter == cat.slug %}selected{% endif %}>{{ cat.name }}</option>
+              {% endfor %}
+            </select>
+            <select name="status">
+              <option value="">Todos los estados</option>
+              <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Activos</option>
+              <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactivos</option>
+            </select>
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="pager">
+            <div class="small">Mostrando {{ filtered_commands|length }} de {{ cmd_total }} resultados. Página {{ cmd_page }}/{{ cmd_total_pages }}</div>
+            <div>
+              {% if cmd_page > 1 %}
+              <a href="{{ url_for('admin_panel', section='comandos', q=q, category=category_filter, status=status_filter, page=cmd_page-1) }}">Anterior</a>
+              {% endif %}
+              {% if cmd_page < cmd_total_pages %}
+              <a href="{{ url_for('admin_panel', section='comandos', q=q, category=category_filter, status=status_filter, page=cmd_page+1) }}" class="u-ml-12">Siguiente</a>
+              {% endif %}
+            </div>
+          </div>
+          <div class="table-scroll">
+          <table class="commands-table">
+            <thead><tr><th>Comando</th><th>Categoría</th><th>Plan</th><th>Validación</th><th>Costo</th><th>Estado</th><th>Editar</th></tr></thead>
+            <tbody>
+              {% for cmd in filtered_commands %}
+              <tr>
+                <td>
+                  <strong>/{{ cmd.slug }}</strong> · {{ cmd.name }}
+                  <div class="small">{{ cmd.description or cmd.usage_hint or '—' }}</div>
+                </td>
+                <td>{{ cmd.category_name or 'Sin categoría' }}</td>
+                <td><span class="pill">{{ cmd.required_plan_label or 'Libre' }}</span></td>
+                <td><span class="pill">{{ cmd.validation_label or 'Sin validación' }}</span></td>
+                <td>{{ cmd.cost }}</td>
+                <td>{% if cmd.is_active %}<span class="badge ok">Activo</span>{% else %}<span class="badge off">Inactivo</span>{% endif %}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Editar</summary>
+                  <form method="post" action="{{ url_for('admin_save_command') }}">
+                    <input type="hidden" name="slug" value="{{ cmd.slug }}">
+                    <div class="inline">
+                      <input name="name" value="{{ cmd.name }}" required>
+                      <input name="cost" type="number" min="0" value="{{ cmd.cost }}" required>
+                    </div>
+                    <div class="inline">
+                      <select name="category_id">
+                        <option value="">Sin categoría</option>
+                        {% for cat in categories %}
+                        <option value="{{ cat.id }}" {% if cmd.category_id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+                        {% endfor %}
+                      </select>
+                      <select name="is_active">
+                        <option value="1" {% if cmd.is_active %}selected{% endif %}>Activo</option>
+                        <option value="0" {% if not cmd.is_active %}selected{% endif %}>Inactivo</option>
+                      </select>
+                    </div>
+                    <div class="inline">
+                      <input name="sort_order" type="number" value="{{ cmd.sort_order }}">
+                      <input name="usage_hint" value="{{ cmd.usage_hint or '' }}" placeholder="/cmd arg">
+                    </div>
+                    <label>Plan mínimo</label>
+                    <select name="required_plan">
+                      <option value="FREE" {% if cmd.required_plan == 'FREE' %}selected{% endif %}>Libre / todos</option>
+                      <option value="BASICO" {% if cmd.required_plan == 'BASICO' %}selected{% endif %}>Básico</option>
+                      <option value="STANDARD" {% if cmd.required_plan == 'STANDARD' %}selected{% endif %}>Standard</option>
+                      <option value="PREMIUM" {% if cmd.required_plan == 'PREMIUM' %}selected{% endif %}>Premium</option>
+                    </select>
+                    <label>INFO</label>
+                    <textarea name="description" placeholder="Texto mostrado en /cmds">{{ cmd.description or '' }}</textarea>
+                    <label>Validación</label>
+                    <div class="inline">
+                      <select name="validation_type">
+                        <option value="none" {% if cmd.validation_type == 'none' %}selected{% endif %}>Sin validación</option>
+                        <option value="dni" {% if cmd.validation_type == 'dni' %}selected{% endif %}>DNI: 8 dígitos</option>
+                        <option value="digits" {% if cmd.validation_type in ['digits', 'number'] %}selected{% endif %}>Solo números</option>
+                        <option value="letters" {% if cmd.validation_type == 'letters' %}selected{% endif %}>Solo letras</option>
+                        <option value="regex" {% if cmd.validation_type == 'regex' %}selected{% endif %}>Regex personalizada</option>
+                        <option value="photo" {% if cmd.validation_type in ['photo', 'media'] %}selected{% endif %}>Foto/archivo requerido</option>
+                        <option value="photo_text" {% if cmd.validation_type in ['photo_text', 'media_text'] %}selected{% endif %}>Foto/archivo + texto</option>
+                      </select>
+                      <input name="validation_length" value="{{ cmd.validation_length or '' }}" placeholder="Longitud exacta">
+                    </div>
+                    <div class="inline">
+                      <input name="validation_min_length" value="{{ cmd.validation_min_length or '' }}" placeholder="Mínimo">
+                      <input name="validation_max_length" value="{{ cmd.validation_max_length or '' }}" placeholder="Máximo">
+                    </div>
+                    <input name="validation_regex" value="{{ cmd.validation_regex or '' }}" placeholder="Regex opcional">
+                    <input name="validation_empty_message" value="{{ cmd.validation_empty_message or '' }}" placeholder="Mensaje si está vacío">
+                    <input name="validation_invalid_message" value="{{ cmd.validation_invalid_message or '' }}" placeholder="Mensaje si está mal">
+                    <button type="submit">Guardar</button>
+                  </form>
+                  <form method="post" action="{{ url_for('admin_duplicate_command') }}" class="stack u-mt-10" data-confirm="¿Duplicar /{{ cmd.slug }} con el nuevo slug indicado?">
+                    <input type="hidden" name="source_slug" value="{{ cmd.slug }}">
+                    <div class="inline">
+                      <input name="new_slug" placeholder="nuevo_slug" required>
+                      <input name="new_name" placeholder="Nombre visible opcional">
+                    </div>
+                    <button class="secondary" type="submit">Duplicar comando</button>
+                  </form>
+                  <form method="post" action="{{ url_for('admin_delete_command') }}" data-confirm="¿Eliminar /{{ cmd.slug }} del catálogo?">
+                    <input type="hidden" name="slug" value="{{ cmd.slug }}">
+                    <button class="danger" type="submit">Eliminar comando</button>
+                  </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not filtered_commands %}
+              <tr><td colspan="7">No hay comandos que coincidan con el filtro actual.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      </div>
+      {% endif %}

@@ -31,83 +31,82 @@ ALLOWED_VIEW_ROLES = {"FUNDADOR", "CO-FUNDADOR", "SELLER"}
 
 SECTIONS = {
     "diag": {
-        "title": "Diagnostico",
+        "title": "Diagnóstico",
         "lines": [
-            "<code>/status</code> - Estado de web, worker, DB, catalogo, keys y errores.",
-            "<code>/paneladmin</code> - Link rapido del panel web.",
-            "<code>/errores</code> - Ultimos errores registrados.",
-            "<code>/backup</code> - Backup ZIP de la base de datos.",
+            "<code>/status</code> · Estado de web, worker, base, keys y errores.",
+            "<code>/paneladmin</code> · Abrir el panel web.",
+            "<code>/errores</code> · Consultar los últimos errores.",
         ],
     },
     "usuarios": {
         "title": "Usuarios",
         "lines": [
-            "<code>/user ID</code> - Perfil rapido del usuario.",
-            "<code>/ban ID</code> - Ban con confirmacion.",
-            "<code>/unban ID</code> - Quitar ban.",
-            "<code>/dm ID mensaje</code> - Enviar mensaje directo.",
+            "<code>/user ID</code> · Ver el perfil del usuario.",
+            "<code>/ban ID</code> · Bloquear con confirmación.",
+            "<code>/unban ID</code> · Quitar el bloqueo.",
+            "<code>/dm ID mensaje</code> · Enviar un mensaje directo.",
         ],
     },
     "planes": {
-        "title": "Creditos y planes",
+        "title": "Créditos y planes",
         "lines": [
-            "<code>/cred ID|PLAN|CANTIDAD</code> - Sumar creditos.",
-            "<code>/uncred ID|PLAN|CANTIDAD</code> - Restar creditos.",
-            "<code>/setcred ID|PLAN|CANTIDAD</code> - Igualar creditos.",
-            "<code>/sub ID|PLAN|DIAS</code> - Sumar dias.",
-            "<code>/unsub ID|PLAN|DIAS</code> - Restar dias.",
-            "<code>/setsub ID|PLAN|DIAS</code> - Igualar dias.",
-            "<code>/setrol ID|ROL</code> - Cambiar rol.",
-            "<code>/setantispam ID|SEGUNDOS</code> - Cambiar anti-spam.",
+            "<code>/cred ID|PLAN|CANTIDAD</code> · Sumar créditos.",
+            "<code>/uncred ID|PLAN|CANTIDAD</code> · Restar créditos.",
+            "<code>/setcred ID|PLAN|CANTIDAD</code> · Establecer créditos.",
+            "<code>/sub ID|PLAN|DÍAS</code> · Sumar días.",
+            "<code>/unsub ID|PLAN|DÍAS</code> · Restar días.",
+            "<code>/setsub ID|PLAN|DÍAS</code> · Establecer días.",
+            "<code>/setrol ID|ROL</code> · Cambiar rol.",
+            "<code>/setantispam ID|SEGUNDOS</code> · Cambiar el anti-spam.",
         ],
     },
     "keys": {
         "title": "Keys",
         "lines": [
-            "<code>/genkey dias 30</code> - Crear una key de 30 dias.",
-            "<code>/genkey creditos 100</code> - Crear una key de 100 creditos.",
-            "<code>/genkey dias 30 3 10</code> - Crear 10 keys con 3 usos.",
-            "<code>/keysinfo KEY</code> - Ver estado de una key.",
-            "<code>/keyslog</code> - Ultimos canjes.",
+            "<code>/genkey dias 30</code> · Crear una key de 30 días.",
+            "<code>/genkey creditos 100</code> · Crear una key de 100 créditos.",
+            "<code>/genkey dias 30 3 10</code> · Crear 10 keys de 3 usos.",
+            "<code>/keysinfo KEY</code> · Ver el estado de una key.",
+            "<code>/keyslog</code> · Consultar los últimos canjes.",
         ],
     },
     "solicitudes": {
         "title": "Solicitudes",
         "lines": [
-            "<code>/pending</code> o <code>/solicitudes</code> - Ver pendientes.",
-            "<code>/reply ID texto</code> - Responder y cobrar.",
-            "<code>/rquick ID plantilla</code> - Responder con plantilla.",
-            "<code>/done ID</code> - Finalizar solicitud.",
-            "<code>/close ID motivo</code> - Cerrar sin cobrar.",
-            "<code>/fail ID motivo</code> - Marcar fallida.",
-            "<code>/reopen ID</code> - Reabrir.",
-            "<code>/requestlog 20</code> - Historial rapido.",
+            "<code>/pending</code> o <code>/solicitudes</code> · Ver solicitudes pendientes.",
+            "<code>/reply ID texto</code> · Responder y cobrar.",
+            "<code>/rquick ID plantilla</code> · Responder con una plantilla.",
+            "<code>/done ID</code> · Finalizar una solicitud.",
+            "<code>/close ID motivo</code> · Cerrar sin cobrar.",
+            "<code>/fail ID motivo</code> · Marcar como fallida.",
+            "<code>/reopen ID</code> · Reabrir una solicitud.",
+            "<code>/requestlog 20</code> · Ver el historial reciente.",
         ],
     },
     "catalogo": {
-        "title": "Catalogo y ventas",
+        "title": "Catálogo y ventas",
         "lines": [
-            "<code>/menu</code> - Menu publico de comandos.",
-            "<code>/buy</code> - Menu publico de compra.",
-            "<code>/precios</code> - Vista rapida de precios.",
-            "<code>/ventas</code> - Resumen de ventas.",
+            "<code>/menu</code> · Abrir el catálogo público.",
+            "<code>/buy</code> · Abrir la tienda pública.",
+            "<code>/precios</code> · Consultar los precios.",
+            "<code>/ventas</code> · Ver el resumen de ventas.",
         ],
     },
     "global": {
         "title": "Mensajes globales",
         "lines": [
-            "<code>/global mensaje</code> - Preparar broadcast con preview.",
-            "<code>/global --all mensaje</code> - Incluir baneados.",
-            "Tambien puedes responder una foto, video o archivo con <code>/global</code>.",
+            "<code>/global mensaje</code> · Preparar un envío con vista previa.",
+            "<code>/global --all mensaje</code> · Incluir usuarios baneados.",
+            "También puedes responder a una foto, video o archivo con <code>/global</code>.",
         ],
     },
 }
 
 BUTTON_ROWS = [
-    [("Diagnostico", "diag"), ("Usuarios", "usuarios")],
-    [("Creditos/planes", "planes"), ("Keys", "keys")],
-    [("Solicitudes", "solicitudes"), ("Catalogo", "catalogo")],
-    [("Global", "global")],
+    [("🩺 Diagnóstico", "diag"), ("👥 Usuarios", "usuarios")],
+    [("💎 Créditos y planes", "planes"), ("🔑 Keys", "keys")],
+    [("📨 Solicitudes", "solicitudes"), ("🛍️ Catálogo y ventas", "catalogo")],
+    [("📢 Mensajes globales", "global")],
 ]
 
 
@@ -172,31 +171,31 @@ def _keyboard(active: str = "home") -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"{'>' if key == active else ''} {label}".strip(),
+                    f"{'✅ ' if key == active else ''}{label}".strip(),
                     callback_data=f"adminmenu:{key}",
                 )
                 for label, key in row
             ]
         )
     if active != "home":
-        rows.append([InlineKeyboardButton("Inicio", callback_data="adminmenu:home")])
+        rows.append([InlineKeyboardButton("↩️ Menú principal", callback_data="adminmenu:home")])
     return InlineKeyboardMarkup(rows)
 
 
 def _home_text(role: str) -> str:
     return "\n".join(
         [
-            f"<b>{html.escape(_brand())} ⇒ MENU ADMIN</b>",
-            f"<i>Acceso detectado: {html.escape(role or 'SIN ROL')}</i>",
+            f"🛡️ <b>{html.escape(_brand())} · ADMINISTRACIÓN</b>",
+            f"👤 <i>Rol: {html.escape(role or 'SIN ROL')}</i>",
             "",
-            "Elige una seccion con los botones. Los comandos viejos siguen funcionando:",
+            "Elige una sección para ver sus acciones. También puedes usar los comandos directamente:",
             "<code>/paneladmin</code>",
             "",
-            "<b>Flujos rapidos</b>",
-            "Atender: <code>/pending</code> -> <code>/rquick ID completado</code> -> <code>/done ID</code>",
-            "Dar plan: <code>/setsub ID|PREMIUM|30</code>",
-            "Dar creditos: <code>/cred ID|PREMIUM|100</code>",
-            "Revisar sistema: <code>/status</code> y luego <code>/errores</code>",
+            "⚡ <b>Accesos rápidos</b>",
+            "📨 Solicitudes: <code>/pending</code> → <code>/rquick ID plantilla</code> → <code>/done ID</code>",
+            "💎 Asignar plan: <code>/setsub ID|PREMIUM|30</code>",
+            "🪙 Asignar créditos: <code>/cred ID|PREMIUM|100</code>",
+            "🩺 Diagnóstico: <code>/status</code> · fallos: <code>/errores</code>",
         ]
     )
 
@@ -206,10 +205,10 @@ def _render(section: str = "home", role: str = "ADMIN") -> str:
         return _home_text(role)
     data = SECTIONS[section]
     lines = [
-        f"<b>{html.escape(_brand())} ⇒ {html.escape(data['title']).upper()}</b>",
-        f"<i>Acceso detectado: {html.escape(role or 'SIN ROL')}</i>",
+        f"🧭 <b>{html.escape(_brand())} · {html.escape(data['title']).upper()}</b>",
+        f"👤 <i>Rol: {html.escape(role or 'SIN ROL')}</i>",
         "",
-        *data["lines"],
+        *(f"🔹 {line}" for line in data["lines"]),
     ]
     return "\n".join(lines)
 

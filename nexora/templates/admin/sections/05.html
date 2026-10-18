@@ -1,0 +1,111 @@
+      {% if active_section == 'compras' %}
+      <div class="stack">
+        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">Los totales históricos detallados están en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a>. La lista de compras y sus filtros siguen disponibles aquí.</div>{% endif %}
+        <div class="card">
+          <h2>Crear compra manual</h2>
+          <form method="post" action="{{ url_for('admin_create_purchase') }}" class="inline">
+            <input name="id_tg" value="{{ purchase_user }}" placeholder="ID usuario" required>
+            <input name="vendedor" value="{{ seller_vendor_scope or purchase_vendor or panel_user }}" placeholder="Vendedor" {% if seller_vendor_scope %}readonly{% endif %}>
+            <input name="compro" placeholder="Ej: CREDITOS +100 / PLAN 30 DIAS" required>
+            <select name="estado">
+              {% for status in purchase_statuses %}
+              <option value="{{ status }}" {% if status == 'ENTREGADA' %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <input name="notas" placeholder="Nota interna">
+            <input name="comprobante" placeholder="Comprobante o URL">
+            <button type="submit">Crear compra</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Compras</h2>
+              <p class="small">Filtra ventas por cliente, vendedor, fecha y tipo.</p>
+            </div>
+            <div class="toolbar-right">
+              <a href="{{ url_for('admin_export_purchases_csv', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status) }}">CSV</a>
+              <a href="{{ url_for('admin_export_purchases_json', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status) }}">JSON</a>
+            </div>
+          </div>
+          <div class="summary u-mb-14">
+            {% for item in dashboard.ventas_por_periodo %}
+            <div class="metric"><span class="pill">{{ item.label }}</span><h3>{{ item.total }}</h3><div class="small">Cred: {{ item.creditos }} · Días: {{ item.dias }}</div></div>
+            {% endfor %}
+            {% for item in dashboard.ventas_por_tipo %}
+            <div class="metric"><span class="pill">{{ item.tipo }}</span><h3>{{ item.total }}</h3><div class="small">Clasificación global</div></div>
+            {% endfor %}
+          </div>
+          <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+            <input type="hidden" name="section" value="compras">
+            <input name="purchase_user" value="{{ purchase_user }}" placeholder="ID usuario">
+            <input name="purchase_vendor" value="{{ purchase_vendor }}" placeholder="ID vendedor" {% if seller_vendor_scope %}readonly{% endif %}>
+            <input name="purchase_from" type="date" value="{{ purchase_from }}">
+            <input name="purchase_to" type="date" value="{{ purchase_to }}">
+            <select name="purchase_kind">
+              <option value="">Todo tipo</option>
+              <option value="credits" {% if purchase_kind == 'credits' %}selected{% endif %}>Créditos</option>
+              <option value="days" {% if purchase_kind == 'days' %}selected{% endif %}>Días</option>
+            </select>
+            <select name="purchase_status">
+              <option value="">Todo estado</option>
+              {% for status in purchase_statuses %}
+              <option value="{{ status }}" {% if purchase_status == status %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">Filtrar</button>
+          </form>
+          <div class="summary">
+            <div class="metric"><span class="pill">Registros</span><h3>{{ purchases_total }}</h3><div class="small">Coincidencias en el filtro</div></div>
+            <div class="metric"><span class="pill">Clientes</span><h3>{{ purchases|map(attribute='ID_TG')|unique|list|length }}</h3><div class="small">En esta página</div></div>
+            <div class="metric"><span class="pill">Vendedores</span><h3>{{ purchases|map(attribute='VENDEDOR')|unique|list|length }}</h3><div class="small">En esta página</div></div>
+            <div class="metric"><span class="pill">Estado</span><h3>{{ purchase_status or 'Todo' }}</h3><div class="small">{{ purchase_kind or 'Todo tipo' }}</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>ID</th><th>Usuario</th><th>Vendedor</th><th>Compra</th><th>Fecha</th><th>Estado y notas</th></tr></thead>
+            <tbody>
+              {% for row in purchases %}
+              <tr>
+                <td>#{{ row.ID }}</td>
+                <td><a href="{{ url_for('admin_panel', section='usuario', uid=row.ID_TG) }}">{{ row.ID_TG }}</a></td>
+                <td>{{ row.VENDEDOR or '—' }}</td>
+                <td><strong>{{ row.COMPRO or '—' }}</strong></td>
+                <td>{{ row.FECHA or '—' }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_update_purchase') }}">
+                    <input type="hidden" name="purchase_id" value="{{ row.ID }}">
+                    <input type="hidden" name="purchase_user" value="{{ purchase_user }}">
+                    <input type="hidden" name="purchase_vendor" value="{{ purchase_vendor }}">
+                    <input type="hidden" name="purchase_from" value="{{ purchase_from }}">
+                    <input type="hidden" name="purchase_to" value="{{ purchase_to }}">
+                    <input type="hidden" name="purchase_kind" value="{{ purchase_kind }}">
+                    <input type="hidden" name="purchase_status" value="{{ purchase_status }}">
+                    <select name="estado">
+                      {% for status in purchase_statuses %}
+                      <option value="{{ status }}" {% if (row.ESTADO or 'ENTREGADA') == status %}selected{% endif %}>{{ status }}</option>
+                      {% endfor %}
+                    </select>
+                    <input name="notas" value="{{ row.NOTAS or '' }}" placeholder="Nota interna">
+                    <input name="comprobante" value="{{ row.COMPROBANTE or '' }}" placeholder="Comprobante o URL">
+                    <button type="submit">Guardar</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not purchases %}
+              <tr><td colspan="6">No hay compras con ese filtro.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+          <div class="pager">
+            <div class="small">Mostrando {{ purchases|length }} de {{ purchases_total }} compras. Página {{ purchase_page }}/{{ purchase_total_pages }}</div>
+            <div>
+              {% if purchase_page > 1 %}<a href="{{ url_for('admin_panel', section='compras', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status, purchase_page=purchase_page-1) }}">Anterior</a>{% endif %}
+              {% if purchase_page < purchase_total_pages %}<a href="{{ url_for('admin_panel', section='compras', purchase_user=purchase_user, purchase_vendor=purchase_vendor, purchase_from=purchase_from, purchase_to=purchase_to, purchase_kind=purchase_kind, purchase_status=purchase_status, purchase_page=purchase_page+1) }}" class="u-ml-12">Siguiente</a>{% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}

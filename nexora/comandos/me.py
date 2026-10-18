@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 from telegram import Update
 from telegram.ext import ContextTypes
 from nexora.storage import db_path
-from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json, fetch_api_json_async
+from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -72,18 +72,21 @@ def _days_left(exp_iso: Optional[str]) -> Tuple[str, bool, Optional[int]]:
 
 
 def _get_remote_settings() -> dict:
+    return _SETTINGS_CACHE["data"] or {}
+
+
+async def _refresh_remote_settings() -> dict:
     now = time.monotonic()
     if _SETTINGS_CACHE["data"] is not None and now - float(_SETTINGS_CACHE["ts"]) < 30:
         return _SETTINGS_CACHE["data"]
     if not API_BASE:
-        return {}
-    st, js = fetch_api_json("/bot_catalog", timeout=12)
+        return _SETTINGS_CACHE["data"] or {}
+    st, js = await fetch_api_json_async("/bot_catalog", timeout=12)
     if st == 200 and js.get("status") == "ok":
         data = ((js.get("data") or {}).get("settings") or {})
         _SETTINGS_CACHE["ts"] = now
         _SETTINGS_CACHE["data"] = data
-        return data
-    return {}
+    return _SETTINGS_CACHE["data"] or {}
 
 
 def _bot_brand() -> str:
@@ -191,12 +194,13 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = data.get("FECHA DE CADUCIDAD")
 
     s2, j2 = await fetch_api_json_async(f"/historial_id?ID_TG={target_id}")
-    total_consultas = 0
-    hoy_consultas = 0
+    total_consultas = None
+    hoy_consultas = None
 
     if s2 == 200:
         rows = j2.get("data", []) or []
         total_consultas = len(rows)
+        hoy_consultas = 0
         try:
             lima_today = datetime.now(ZoneInfo("America/Lima")).date()
         except Exception:
@@ -236,7 +240,12 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tiempo_str, activo, _ = _days_left(exp)
     creditos_str = f"{creditos}{' ♾️' if activo else ''}"
 
-    header = f"👤 {_bot_brand()} · TU CUENTA"
+    await _refresh_remote_settings()
+    is_self = target_id == str(invoker.id)
+    header_label = "TU CUENTA" if is_self else "PERFIL DE USUARIO"
+    header = f"👤 {_bot_brand()} · {header_label}"
+    activity_total = str(total_consultas) if total_consultas is not None else "No disponible"
+    activity_today = str(hoy_consultas) if hoy_consultas is not None else "No disponible"
 
     caption = (
         f"<b>{header}</b>\n"
@@ -253,8 +262,8 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏳ <b>Tiempo</b> ⇒ <code>{html.escape(str(tiempo_str))}</code>\n"
         f"📆 <b>Expira</b> ⇒ <code>{html.escape(str(exp_str_local))}</code>\n"
         f"\n<b>📊 Actividad</b>\n"
-        f"🧾 <b>Total consultas</b> ⇒ <code>{total_consultas}</code>\n"
-        f"🌅 <b>Consultas hoy</b> ⇒ <code>{hoy_consultas}</code>\n"
+        f"🧾 <b>Total consultas</b> ⇒ <code>{activity_total}</code>\n"
+        f"🌅 <b>Consultas hoy</b> ⇒ <code>{activity_today}</code>\n"
         f"\n🛒 <b>Compras</b> ⇒ /compras"
     )
 

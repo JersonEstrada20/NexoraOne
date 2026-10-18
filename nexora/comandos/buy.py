@@ -15,7 +15,7 @@ from nexora.comandos.utils import (
     DEFAULT_OWNER_LINK,
     DEFAULT_OWNER_TEXT,
     default_asset_url,
-    fetch_api_json,
+    fetch_api_json_async,
 )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,22 +41,19 @@ def btn(text: str, url: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, url=url)
 
 
-def _fetch_api_json(path: str, timeout: int = 15):
-    status, data = fetch_api_json(path, timeout=timeout)
-    return data if status == 200 else None
-
-
 def _get_remote_catalog():
+    return _CATALOG_CACHE["data"]
+
+
+async def _refresh_remote_catalog():
     now = time.monotonic()
     if _CATALOG_CACHE["data"] is not None and now - float(_CATALOG_CACHE["ts"]) < 30:
         return _CATALOG_CACHE["data"]
-    js = _fetch_api_json("/bot_catalog")
-    if js and js.get("status") == "ok":
-        data = js.get("data") or {}
-        _CATALOG_CACHE["ts"] = now
-        _CATALOG_CACHE["data"] = data
-        return data
-    return None
+    status, response = await fetch_api_json_async("/bot_catalog", timeout=15)
+    if status == 200 and response.get("status") == "ok":
+        _CATALOG_CACHE["ts"] = time.monotonic()
+        _CATALOG_CACHE["data"] = response.get("data") or {}
+    return _CATALOG_CACHE["data"]
 
 
 def _get_buy_groups():
@@ -205,8 +202,11 @@ def _build_buy_keyboard(settings: dict) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🛍️ Todo", callback_data="buy:all"),
             InlineKeyboardButton("💎 Créditos", callback_data="buy:credits"),
+        ],
+        [
             InlineKeyboardButton("⏳ Planes", callback_data="buy:days"),
-        ]
+            InlineKeyboardButton("🏠 Menú principal", callback_data="mainmenu:home"),
+        ],
     ]
 
     buttons = []
@@ -239,13 +239,14 @@ def _build_buy_keyboard(settings: dict) -> InlineKeyboardMarkup:
     if non_empty(support_link):
         extra_buttons.append(btn("🆘 Soporte", support_link))
     if non_empty(terms_link):
-        extra_buttons.append(btn("Términos", terms_link))
+        extra_buttons.append(btn("📜 Términos", terms_link))
     for i in range(0, len(extra_buttons), 2):
         rows.append(extra_buttons[i:i + 2])
     return InlineKeyboardMarkup(rows)
 
 
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _refresh_remote_catalog()
     me = await context.bot.get_me()
     bot_arroba = f"@{me.username}" if non_empty(me.username) else "bot"
     texto = _build_buy_text(bot_arroba)
@@ -281,7 +282,8 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
-    await query.answer()
+    await query.answer("Actualizando tienda…")
+    await _refresh_remote_catalog()
     section = (query.data or "buy:all").split(":", 1)[-1]
     if section not in {"all", "credits", "days"}:
         section = "all"

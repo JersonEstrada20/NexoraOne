@@ -8,7 +8,7 @@ from urllib import parse as _urlparse
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json
+from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -30,7 +30,7 @@ ANTISPAM_ENDPOINT = "/antispam"
 ADMIN_IDS = configured_admin_ids()
 
 
-_SETTINGS_CACHE = {"ts": 0.0, "data": None}
+_SETTINGS_CACHE = {"ts": 0.0, "data": None, "refreshing": False}
 
 
 def _brand_clean(s: str) -> str:
@@ -41,13 +41,13 @@ def _brand_clean(s: str) -> str:
     return s
 
 
-def _get_remote_settings() -> dict:
+async def _refresh_remote_settings() -> dict:
     now = time.monotonic()
     if _SETTINGS_CACHE["data"] is not None and now - float(_SETTINGS_CACHE["ts"]) < 30:
         return _SETTINGS_CACHE["data"]
     if not API_BASE:
         return {}
-    st, js = fetch_api_json("/bot_catalog", timeout=12)
+    st, js = await fetch_api_json_async("/bot_catalog", timeout=12)
     if st == 200 and js.get("status") == "ok":
         data = ((js.get("data") or {}).get("settings") or {})
         _SETTINGS_CACHE["ts"] = now
@@ -57,7 +57,8 @@ def _get_remote_settings() -> dict:
 
 
 def _bot_brand() -> str:
-    settings = _get_remote_settings()
+    # Never perform network I/O while formatting a Telegram response.
+    settings = _SETTINGS_CACHE.get("data") or {}
     raw = (
         settings.get("BOT_NAME")
         or settings.get("NAME")
@@ -80,6 +81,21 @@ class _BrandProxy:
 
 BOT_BRAND = _BrandProxy()
 
+
+def _schedule_settings_refresh(context: ContextTypes.DEFAULT_TYPE) -> None:
+    now = time.monotonic()
+    if _SETTINGS_CACHE["refreshing"] or now - float(_SETTINGS_CACHE["ts"]) < 30:
+        return
+    _SETTINGS_CACHE["refreshing"] = True
+
+    async def refresh():
+        try:
+            await _refresh_remote_settings()
+        finally:
+            _SETTINGS_CACHE["refreshing"] = False
+
+    context.application.create_task(refresh())
+
 _ALLOWED_ALL = {"FUNDADOR", "CO-FUNDADOR", "SELLER"}
 _ALLOWED_SETROL = {"FUNDADOR", "CO-FUNDADOR"}
 
@@ -88,16 +104,16 @@ PLAN_MAP_TXT = {"BASICO", "STANDARD", "PREMIUM"}
 PLAN_TO_ANTISPAM = {"BASICO": 30, "STANDARD": 15, "PREMIUM": 5}
 
 
-def _get_tg_info(id_tg: str) -> Tuple[int, dict]:
+async def _get_tg_info_async(id_tg: str) -> Tuple[int, dict]:
     if not API_BASE:
         return 500, {"status": "error", "message": "API_BASE no configurada"}
-    return fetch_api_json(f"/tg_info?ID_TG={_urlparse.quote(id_tg)}")
+    return await fetch_api_json_async(f"/tg_info?ID_TG={_urlparse.quote(id_tg)}")
 
 
-def _caller_role_and_auth(user_id: int, need_setrol: bool = False) -> Tuple[bool, str]:
+async def _caller_role_and_auth(user_id: int, need_setrol: bool = False) -> Tuple[bool, str]:
     if user_id in ADMIN_IDS:
         return True, "ADMIN"
-    st, js = _get_tg_info(str(user_id))
+    st, js = await _get_tg_info_async(str(user_id))
     if st != 200:
         return False, ""
     data = js.get("data", {}) or {}
@@ -131,19 +147,19 @@ def _badge(text: str) -> str:
     return f"<code>{html.escape(str(text))}</code>"
 
 
-def _operate(endpoint: str, target_id: str, oper: str, cantidad: int, actor: int | str = "") -> Tuple[int, dict]:
-    return fetch_api_json(
+async def _operate(endpoint: str, target_id: str, oper: str, cantidad: int, actor: int | str = "") -> Tuple[int, dict]:
+    return await fetch_api_json_async(
         endpoint,
         method="POST",
         payload={"ID_TG": target_id, "operacion": oper, "cantidad": cantidad, "actor": str(actor or "")},
     )
 
 
-def _log_compra(id_tg: str, id_vendedor: str, cantidad_texto: str):
+async def _log_compra(id_tg: str, id_vendedor: str, cantidad_texto: str):
     if not API_BASE:
         return
     try:
-        fetch_api_json(
+        await fetch_api_json_async(
             COMPRAS_ENDPOINT,
             timeout=12,
             method="POST",
@@ -171,8 +187,8 @@ async def _notify_admin_purchase(context: ContextTypes.DEFAULT_TYPE, *, target_i
             pass
 
 
-def _set_antispam(id_tg: str, valor: int, actor: int | str = "") -> Tuple[int, dict]:
-    return fetch_api_json(
+async def _set_antispam(id_tg: str, valor: int, actor: int | str = "") -> Tuple[int, dict]:
+    return await fetch_api_json_async(
         ANTISPAM_ENDPOINT,
         timeout=12,
         method="POST",
@@ -180,11 +196,11 @@ def _set_antispam(id_tg: str, valor: int, actor: int | str = "") -> Tuple[int, d
     )
 
 
-def _do_plan_update_if_provided(target_id: str, plan_txt: str | None, actor: int | str = "") -> tuple[bool, str, int | None]:
+async def _do_plan_update_if_provided(target_id: str, plan_txt: str | None, actor: int | str = "") -> tuple[bool, str, int | None]:
     if not plan_txt:
         return True, "—", None
 
-    st, js = fetch_api_json(
+    st, js = await fetch_api_json_async(
         PLAN_ENDPOINT,
         method="POST",
         payload={"ID_TG": target_id, "plan": plan_txt, "actor": str(actor or "")},
@@ -194,7 +210,7 @@ def _do_plan_update_if_provided(target_id: str, plan_txt: str | None, actor: int
 
     anti = PLAN_TO_ANTISPAM.get(plan_txt)
     if anti is not None:
-        _set_antispam(target_id, anti, actor=actor)
+        await _set_antispam(target_id, anti, actor=actor)
     return True, plan_txt, anti
 
 
@@ -258,6 +274,7 @@ def _extract_reply_target(update: Update) -> str | None:
 async def _handle_cred_like(update: Update, context: ContextTypes.DEFAULT_TYPE, oper: str):
     msg = update.effective_message
     caller = update.effective_user
+    _schedule_settings_refresh(context)
 
     if not API_BASE:
         await msg.reply_text(
@@ -267,7 +284,7 @@ async def _handle_cred_like(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         return
 
-    ok, rol = _caller_role_and_auth(caller.id, need_setrol=False)
+    ok, rol = await _caller_role_and_auth(caller.id, need_setrol=False)
     if not ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • Permiso denegado", [f"Tu rol actual: {_badge(rol or '—')}."]),
@@ -312,7 +329,7 @@ async def _handle_cred_like(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             )
             return
 
-    plan_ok, plan_msg, anti_val = _do_plan_update_if_provided(target_id, plan_txt, actor=caller.id)
+    plan_ok, plan_msg, anti_val = await _do_plan_update_if_provided(target_id, plan_txt, actor=caller.id)
     if not plan_ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • No se pudo actualizar el plan", [plan_msg]),
@@ -321,17 +338,22 @@ async def _handle_cred_like(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         return
 
-    st, js = _operate(CRED_ENDPOINT, target_id, oper, cantidad, actor=caller.id)
+    st, js = await _operate(CRED_ENDPOINT, target_id, oper, cantidad, actor=caller.id)
     if st != 200:
+        details = [f"Código: {st}", str(js.get("message", "Error"))]
+        if plan_txt:
+            details.append("El plan se actualizó antes de esta operación; revisa el estado antes de repetirla.")
+        if st == 599 or st >= 500:
+            details.append(f"No se pudo confirmar el saldo final. Revisa /me {target_id} antes de reintentar.")
         await msg.reply_text(
-            _err_card(f"{BOT_BRAND} • Fallo al operar créditos", [f"Código: {st}", str(js.get("message", "Error"))]),
+            _err_card(f"{BOT_BRAND} • Fallo al operar créditos", details),
             parse_mode="HTML",
             reply_to_message_id=msg.message_id
         )
         return
 
     cantidad_txt = _amount_label(oper, cantidad, "CREDITOS")
-    _log_compra(id_tg=target_id, id_vendedor=str(caller.id), cantidad_texto=cantidad_txt)
+    await _log_compra(id_tg=target_id, id_vendedor=str(caller.id), cantidad_texto=cantidad_txt)
     await _notify_admin_purchase(
         context,
         target_id=target_id,
@@ -358,6 +380,7 @@ async def _handle_cred_like(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 async def _handle_sub_like(update: Update, context: ContextTypes.DEFAULT_TYPE, oper: str):
     msg = update.effective_message
     caller = update.effective_user
+    _schedule_settings_refresh(context)
 
     if not API_BASE:
         await msg.reply_text(
@@ -367,7 +390,7 @@ async def _handle_sub_like(update: Update, context: ContextTypes.DEFAULT_TYPE, o
         )
         return
 
-    ok, rol = _caller_role_and_auth(caller.id, need_setrol=False)
+    ok, rol = await _caller_role_and_auth(caller.id, need_setrol=False)
     if not ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • Permiso denegado", [f"Tu rol actual: {_badge(rol or '—')}."]),
@@ -412,7 +435,7 @@ async def _handle_sub_like(update: Update, context: ContextTypes.DEFAULT_TYPE, o
             )
             return
 
-    plan_ok, plan_msg, anti_val = _do_plan_update_if_provided(target_id, plan_txt, actor=caller.id)
+    plan_ok, plan_msg, anti_val = await _do_plan_update_if_provided(target_id, plan_txt, actor=caller.id)
     if not plan_ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • No se pudo actualizar el plan", [plan_msg]),
@@ -421,17 +444,22 @@ async def _handle_sub_like(update: Update, context: ContextTypes.DEFAULT_TYPE, o
         )
         return
 
-    st, js = _operate(SUB_ENDPOINT, target_id, oper, cantidad, actor=caller.id)
+    st, js = await _operate(SUB_ENDPOINT, target_id, oper, cantidad, actor=caller.id)
     if st != 200:
+        details = [f"Código: {st}", str(js.get("message", "Error"))]
+        if plan_txt:
+            details.append("El plan se actualizó antes de esta operación; revisa el estado antes de repetirla.")
+        if st == 599 or st >= 500:
+            details.append(f"No se pudo confirmar el resultado. Revisa /me {target_id} antes de reintentar.")
         await msg.reply_text(
-            _err_card(f"{BOT_BRAND} • Fallo al operar suscripción", [f"Código: {st}", str(js.get("message", "Error"))]),
+            _err_card(f"{BOT_BRAND} • Fallo al operar suscripción", details),
             parse_mode="HTML",
             reply_to_message_id=msg.message_id
         )
         return
 
     cantidad_txt = _amount_label(oper, cantidad, "DIAS")
-    _log_compra(id_tg=target_id, id_vendedor=str(caller.id), cantidad_texto=cantidad_txt)
+    await _log_compra(id_tg=target_id, id_vendedor=str(caller.id), cantidad_texto=cantidad_txt)
     await _notify_admin_purchase(
         context,
         target_id=target_id,
@@ -473,6 +501,7 @@ def _parse_setrol(args: list[str]) -> tuple[str | None, str | None, str | None]:
 async def setrol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     caller = update.effective_user
+    _schedule_settings_refresh(context)
 
     if not API_BASE:
         await msg.reply_text(
@@ -482,7 +511,7 @@ async def setrol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    ok, rol = _caller_role_and_auth(caller.id, need_setrol=True)
+    ok, rol = await _caller_role_and_auth(caller.id, need_setrol=True)
     if not ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • Permiso denegado", [f"Se requiere rol {_badge('FUNDADOR/CO-FUNDADOR')} o estar en ADMIN_ID. Tu rol: {_badge(rol or '—')}"]),
@@ -508,7 +537,7 @@ async def setrol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    st, js = fetch_api_json(
+    st, js = await fetch_api_json_async(
         ROL_ENDPOINT,
         method="POST",
         payload={"ID_TG": target_id, "rol": rol_to, "actor": str(caller.id)},
@@ -561,6 +590,7 @@ def _parse_setantispam_args(args: list[str], reply_target: str | None) -> tuple[
 async def setantispam_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     caller = update.effective_user
+    _schedule_settings_refresh(context)
 
     if not API_BASE:
         await msg.reply_text(
@@ -570,7 +600,7 @@ async def setantispam_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    ok, rol = _caller_role_and_auth(caller.id, need_setrol=False)
+    ok, rol = await _caller_role_and_auth(caller.id, need_setrol=False)
     if not ok:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • Permiso denegado", [f"Tu rol actual: {_badge(rol or '—')}."]),
@@ -589,7 +619,7 @@ async def setantispam_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    st, js = _set_antispam(id_tg, val, actor=caller.id)
+    st, js = await _set_antispam(id_tg, val, actor=caller.id)
     if st != 200:
         await msg.reply_text(
             _err_card(f"{BOT_BRAND} • No se pudo actualizar anti-spam", [f"Código: {st}", str(js.get("message", "Error"))]),

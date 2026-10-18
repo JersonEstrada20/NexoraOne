@@ -1,0 +1,103 @@
+      {% if active_section == 'usuarios' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Usuarios</h2>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+          <input type="hidden" name="section" value="usuarios">
+          <input name="uq" value="{{ user_q }}" placeholder="Buscar por ID, rol, web o wsp">
+          <select name="ustatus">
+            <option value="">Todos los estados</option>
+            <option value="ACTIVO" {% if user_status == 'ACTIVO' %}selected{% endif %}>ACTIVO</option>
+            <option value="BANEADO" {% if user_status == 'BANEADO' %}selected{% endif %}>BANEADO</option>
+          </select>
+          <select name="uplan">
+            <option value="">Todos los planes</option>
+            <option value="FREE" {% if user_plan == 'FREE' %}selected{% endif %}>FREE</option>
+            <option value="BASICO" {% if user_plan == 'BASICO' %}selected{% endif %}>BASICO</option>
+            <option value="STANDARD" {% if user_plan == 'STANDARD' %}selected{% endif %}>STANDARD</option>
+            <option value="PREMIUM" {% if user_plan == 'PREMIUM' %}selected{% endif %}>PREMIUM</option>
+          </select>
+          <button type="submit">Filtrar</button>
+        </form>
+        <table>
+          <thead><tr><th>ID</th><th>Perfil</th><th>Estado actual</th><th>Editar</th></tr></thead>
+          <tbody>
+            {% if admin_users %}
+              {% for user in admin_users %}
+              <tr>
+                <td><strong>{{ user.id_tg }}</strong></td>
+                <td>
+                  <div><strong>{{ user.rol_tg or 'FREE' }}</strong></div>
+                  <div class="small">WEB: {{ user.user_web or '—' }} | WSP: {{ user.number_wsp or '—' }}</div>
+                  <div class="small"><a href="{{ url_for('admin_panel', section='usuario', uid=user.id_tg) }}">Abrir perfil</a></div>
+                </td>
+                <td>
+                  <div>Plan: {{ user.plan }}</div>
+                  <div>Estado: {{ user.estado }}</div>
+                  <div>Créditos: {{ user.creditos }}</div>
+                  <div>Antispam: {{ user.antispam }}</div>
+                </td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_save_user') }}">
+                    <input type="hidden" name="id_tg" value="{{ user.id_tg }}">
+                    <div class="inline">
+                      <input name="creditos" type="number" min="0" value="{{ user.creditos or 0 }}">
+                      <input name="antispam" type="number" min="0" value="{{ user.antispam or 0 }}">
+                    </div>
+                    <div class="inline">
+                      <select name="plan">
+                        <option value="FREE" {% if user.plan == 'FREE' %}selected{% endif %}>FREE</option>
+                        <option value="BASICO" {% if user.plan == 'BASICO' %}selected{% endif %}>BASICO</option>
+                        <option value="STANDARD" {% if user.plan == 'STANDARD' %}selected{% endif %}>STANDARD</option>
+                        <option value="PREMIUM" {% if user.plan == 'PREMIUM' %}selected{% endif %}>PREMIUM</option>
+                      </select>
+                      <select name="rol_tg">
+                        <option value="FREE" {% if user.rol_tg == 'FREE' %}selected{% endif %}>FREE</option>
+                        <option value="CLIENTE" {% if user.rol_tg == 'CLIENTE' %}selected{% endif %}>CLIENTE</option>
+                        <option value="SELLER" {% if user.rol_tg == 'SELLER' %}selected{% endif %}>SELLER</option>
+                        <option value="CO-FUNDADOR" {% if user.rol_tg == 'CO-FUNDADOR' %}selected{% endif %}>CO-FUNDADOR</option>
+                        <option value="FUNDADOR" {% if user.rol_tg == 'FUNDADOR' %}selected{% endif %}>FUNDADOR</option>
+                      </select>
+                      <select name="estado">
+                        <option value="ACTIVO" {% if user.estado == 'ACTIVO' %}selected{% endif %}>ACTIVO</option>
+                        <option value="BANEADO" {% if user.estado == 'BANEADO' %}selected{% endif %}>BANEADO</option>
+                      </select>
+                    </div>
+                    <button type="submit">Guardar usuario</button>
+                  </form>
+                  <div class="actions u-mt-8 u-wrap">
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="owner"><button class="secondary" type="submit">Dueño</button></form>
+                    <form method="post" action="{{ url_for('admin_user_action') }}" data-confirm="{{ '¿Desbanear este usuario?' if user.estado == 'BANEADO' else '¿Banear este usuario?' }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="{{ 'unban' if user.estado == 'BANEADO' else 'ban' }}"><button class="{{ 'secondary' if user.estado == 'BANEADO' else 'danger' }}" type="submit">{{ 'Desbanear' if user.estado == 'BANEADO' else 'Banear' }}</button></form>
+                  </div>
+                  <div class="actions u-mt-8 u-wrap">
+                    {% for amount in [10,50,100,500] %}
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="credits_{{ amount }}"><button type="submit">+{{ amount }} cr</button></form>
+                    {% endfor %}
+                  </div>
+                  <div class="actions u-mt-8 u-wrap">
+                    {% for days in [7,15,30,60] %}
+                    <form method="post" action="{{ url_for('admin_user_action') }}"><input type="hidden" name="id_tg" value="{{ user.id_tg }}"><input type="hidden" name="action" value="plan_{{ days }}"><button class="secondary" type="submit">+{{ days }} días</button></form>
+                    {% endfor %}
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="4">No se encontraron usuarios con ese filtro.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div class="small">Mostrando {{ admin_users|length }} de {{ user_total }} usuarios. Página {{ user_page }}/{{ user_total_pages }}</div>
+          <div>
+            {% if user_page > 1 %}
+            <a href="{{ url_for('admin_panel', section='usuarios', uq=user_q, ustatus=user_status, uplan=user_plan, upage=user_page-1) }}">Anterior</a>
+            {% endif %}
+            {% if user_page < user_total_pages %}
+            <a href="{{ url_for('admin_panel', section='usuarios', uq=user_q, ustatus=user_status, uplan=user_plan, upage=user_page+1) }}" class="u-ml-12">Siguiente</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      </div>
+      {% endif %}
