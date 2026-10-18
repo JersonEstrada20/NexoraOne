@@ -29,7 +29,10 @@ async def clear_ban(user_id):
 async def targets(user_id=None):
     async with aiosqlite.connect(DB_PATH) as db:
         if user_id is None:
-            rows = await (await db.execute("SELECT chat_id FROM known_groups UNION SELECT chat_id FROM group_settings WHERE chat_id<0")).fetchall()
+            # known_groups is refreshed by incoming updates, and prior successful
+            # ban targets remain relevant. Avoid resurrecting stale group_settings
+            # rows for chats the bot can no longer access.
+            rows = await (await db.execute("SELECT chat_id FROM known_groups UNION SELECT chat_id FROM global_ban_targets")).fetchall()
         else:
             rows = await (await db.execute("SELECT chat_id FROM global_ban_targets WHERE user_id=?", (user_id,))).fetchall()
         return [row[0] for row in rows]

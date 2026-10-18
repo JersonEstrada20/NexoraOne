@@ -107,6 +107,7 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="Iniciar y ver el menú"),
         BotCommand(command="menu", description="Abrir todos los comandos del bot"),
+        BotCommand(command="me", description="Consultar cuenta, plan y créditos"),
     ])
 
     print("Bot iniciado correctamente...")

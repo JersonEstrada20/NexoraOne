@@ -1328,7 +1328,7 @@ def paginate_items(items: list[dict], page: int, per_page: int = 12):
     return items[start:end], page, total_pages, total
 
 
-def get_dashboard_snapshot(vendor_id: str = ""):
+def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
     vendor_id = (vendor_id or "").strip()
     now = now_utc()
     cutoffs = {
@@ -1359,7 +1359,13 @@ def get_dashboard_snapshot(vendor_id: str = ""):
         "usuarios_por_plan": [],
         "usuarios_por_estado": [],
         "solicitudes_por_estado": [],
+        "analytics_loaded": detailed,
     }
+    # The summary is the default landing page. Keep it responsive on remote
+    # database plans by avoiding analytics queries entirely; the detailed
+    # queries remain available on the stats section where explicitly requested.
+    if not detailed:
+        return data
     try:
         conn = get_conn(DB_PATH)
         cur = conn.cursor()
@@ -2954,7 +2960,17 @@ def panel_can_access_section(section: str, role: str | None = None) -> bool:
 
 def panel_nav_items_for_role(role: str | None = None):
     role = (role or panel_current_role()).strip().upper()
-    return [{"section": section, "label": label} for section, label in PANEL_NAV_ITEMS if panel_can_access_section(section, role)]
+    icons = {
+        "resumen": "📊", "buscar": "🔎", "categorias": "🗂️", "comandos": "⚡",
+        "buy": "🛍️", "usuarios": "👥", "compras": "🧾", "historial": "🕘",
+        "vendedores": "🤝", "ajustes": "🎨", "solicitudes": "📨", "keys": "🔑",
+        "herramientas": "🧰", "sistema": "🖥️", "estadisticas": "📈",
+    }
+    return [
+        {"section": section, "label": label, "icon": icons.get(section, "•")}
+        for section, label in PANEL_NAV_ITEMS
+        if panel_can_access_section(section, role)
+    ]
 
 
 def require_panel_roles(*roles: str):
@@ -4491,16 +4507,18 @@ def admin_panel():
     categories = get_catalog_categories()
     commands = get_catalog_commands()
     settings = get_panel_settings()
-    health_summary = {"runtime": get_runtime_status(), "metrics": get_health_metrics()}
+    health_summary = {"runtime": {}, "metrics": {}}
+    if active_section == "sistema":
+        health_summary = {"runtime": get_runtime_status(), "metrics": get_health_metrics()}
     buy_packages = get_buy_packages()
     global_q = request.args.get("gq", "")
-    global_results = get_global_search_results(global_q)
+    global_results = get_global_search_results(global_q) if global_q else []
     user_q = request.args.get("uq", "")
     user_status = (request.args.get("ustatus") or "").upper()
     user_plan = (request.args.get("uplan") or "").upper()
-    admin_users = get_admin_users(q=user_q, status=user_status, plan=user_plan, limit=250)
+    admin_users = get_admin_users(q=user_q, status=user_status, plan=user_plan, limit=250) if active_section == "usuarios" else []
     profile_user_id = (request.args.get("uid") or request.args.get("user_id") or "").strip()
-    user_profile = get_user_profile_snapshot(profile_user_id) if profile_user_id else {"user": None, "purchases": [], "history": [], "requests": [], "keys": [], "activity": []}
+    user_profile = get_user_profile_snapshot(profile_user_id) if profile_user_id and active_section == "usuario" else {"user": None, "purchases": [], "history": [], "requests": [], "keys": [], "activity": []}
     purchase_user = request.args.get("purchase_user", "")
     purchase_vendor = request.args.get("purchase_vendor", "")
     if seller_vendor_scope:
@@ -4518,7 +4536,7 @@ def admin_panel():
         status=purchase_status,
         limit=300,
         exact_vendor=bool(seller_vendor_scope),
-    )
+    ) if active_section == "compras" else []
     history_user = request.args.get("history_user", "")
     history_command = request.args.get("history_command", "")
     history_platform = request.args.get("history_platform", "")
@@ -4533,24 +4551,24 @@ def admin_panel():
         date_to=history_to,
         q=history_q,
         limit=300,
-    )
-    history_commands = sorted({(row.get("consulta") or "").strip().lower() for row in get_admin_history(limit=1000) if row.get("consulta")})
+    ) if active_section == "historial" else []
+    history_commands = sorted({(row.get("consulta") or "").strip().lower() for row in get_admin_history(limit=1000) if row.get("consulta")}) if active_section == "historial" else []
     vendor_q = request.args.get("vq", "")
     selected_vendor = (request.args.get("vendor") or "").strip()
     if seller_vendor_scope:
         vendor_q = ""
         selected_vendor = seller_vendor_scope
-    vendor_summary = get_vendor_sales_summary(q=vendor_q, limit=250, vendor_id=seller_vendor_scope)
+    vendor_summary = get_vendor_sales_summary(q=vendor_q, limit=250, vendor_id=seller_vendor_scope) if active_section == "vendedores" else []
     if not selected_vendor and vendor_summary:
         selected_vendor = vendor_summary[0]["vendedor"]
-    vendor_detail = get_vendor_sales_detail(selected_vendor, limit=120) if selected_vendor else []
+    vendor_detail = get_vendor_sales_detail(selected_vendor, limit=120) if selected_vendor and active_section == "vendedores" else []
     vendor_total_sales = sum(int(item.get("total_ventas") or 0) for item in vendor_summary)
     request_q = request.args.get("rq", "")
     request_status = request.args.get("rstatus", "")
     request_command = request.args.get("rcommand", "")
     request_from = request.args.get("rfrom", "")
     request_to = request.args.get("rto", "")
-    all_requests = get_request_items(limit=1000)
+    all_requests = get_request_items(limit=1000) if active_section == "solicitudes" else []
     filtered_requests = get_request_items_filtered(
         q=request_q,
         status=request_status,
@@ -4558,7 +4576,7 @@ def admin_panel():
         date_from=request_from,
         date_to=request_to,
         limit=500,
-    )
+    ) if active_section == "solicitudes" else []
     pending_requests = [r for r in all_requests if (r.get("status") or "") == "pending"]
     recent_requests = [r for r in all_requests if (r.get("status") or "") != "pending"]
     filtered_pending_requests = [r for r in filtered_requests if (r.get("status") or "") == "pending"]
@@ -4573,19 +4591,19 @@ def admin_panel():
     key_q = request.args.get("key_q", "")
     key_tipo = request.args.get("key_tipo", "")
     key_status = request.args.get("key_status", "")
-    key_items = get_key_items(q=key_q, tipo=key_tipo, status=key_status, limit=200)
-    key_redemptions = get_key_redemptions(limit=80)
+    key_items = get_key_items(q=key_q, tipo=key_tipo, status=key_status, limit=200) if active_section == "keys" else []
+    key_redemptions = get_key_redemptions(limit=80) if active_section == "keys" else []
     key_counts = {
-        "total": len(get_key_items(limit=10000)),
-        "available": len(get_key_items(status="available", limit=10000)),
-        "used": len(get_key_items(status="used", limit=10000)),
+        "total": len(get_key_items(limit=10000)) if active_section == "keys" else 0,
+        "available": len(get_key_items(status="available", limit=10000)) if active_section == "keys" else 0,
+        "used": len(get_key_items(status="used", limit=10000)) if active_section == "keys" else 0,
         "redemptions": len(key_redemptions),
     }
     q = request.args.get("q", "")
     category_filter = request.args.get("category", "")
     status_filter = request.args.get("status", "")
     filtered_commands = filter_catalog_commands(commands, q=q, category=category_filter, status=status_filter)
-    daily_backups = get_daily_backups(limit=10)
+    daily_backups = get_daily_backups(limit=10) if active_section == "sistema" else []
     latest_backup = daily_backups[0] if daily_backups else None
     audit_action = request.args.get("audit_action", "")
     audit_actor = request.args.get("audit_actor", "")
@@ -4595,7 +4613,7 @@ def admin_panel():
     except Exception:
         cmd_page = 1
     paged_commands, cmd_page, cmd_total_pages, cmd_total = paginate_items(filtered_commands, cmd_page, per_page=10)
-    error_logs = get_error_logs(limit=50)
+    error_logs = get_error_logs(limit=50) if active_section in {"resumen", "sistema"} else []
     error_alert = None
     cutoff = now_utc() - timedelta(hours=24)
     for error in error_logs:
@@ -4605,6 +4623,15 @@ def admin_panel():
                 break
         except (TypeError, ValueError):
             continue
+    dashboard = get_dashboard_snapshot(
+        vendor_id=seller_vendor_scope,
+        detailed=active_section == "estadisticas",
+    )
+    if not dashboard["analytics_loaded"]:
+        dashboard["errores_recientes"] = sum(
+            1 for error in error_logs
+            if str(error.get("created_at") or "") >= (now_utc() - timedelta(days=1)).isoformat()
+        )
     return render_template(
         "admin_panel.html",
         categories=categories,
@@ -4621,10 +4648,10 @@ def admin_panel():
         selected_vendor=selected_vendor,
         settings=settings,
         previews=build_panel_previews(settings, buy_packages, commands),
-        dashboard=get_dashboard_snapshot(vendor_id=seller_vendor_scope),
+        dashboard=dashboard,
         global_q=global_q,
         global_results=global_results,
-        storage=get_storage_snapshot(),
+        storage=get_storage_snapshot() if active_section == "sistema" else {},
         health_summary=health_summary,
         daily_backups=daily_backups,
         latest_backup=latest_backup,
@@ -4632,12 +4659,12 @@ def admin_panel():
         panel_user=session.get("panel_user") or PANEL_USER,
         seller_vendor_scope=seller_vendor_scope,
         panel_nav_items=panel_nav_items_for_role(panel_role),
-        panel_accounts=get_panel_accounts(),
+        panel_accounts=get_panel_accounts() if active_section == "ajustes" else [],
         panel_roles=sorted(PANEL_ROLES),
-        history_cleanup_preview=get_history_cleanup_preview(),
+        history_cleanup_preview=get_history_cleanup_preview() if active_section == "sistema" else [],
         error_logs=error_logs,
         error_alert=error_alert,
-        audit_logs=get_audit_logs(limit=80, action=audit_action, actor=audit_actor, target=audit_target),
+        audit_logs=get_audit_logs(limit=80, action=audit_action, actor=audit_actor, target=audit_target) if active_section == "sistema" else [],
         audit_action=audit_action,
         audit_actor=audit_actor,
         audit_target=audit_target,

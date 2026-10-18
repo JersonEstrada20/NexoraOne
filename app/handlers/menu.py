@@ -125,6 +125,17 @@ SECTIONS = {
     ),
 }
 
+SECTIONS["grouptools"] += (
+    "\n\n🧩 <b>Comandos personalizados</b>\n"
+    "<code>/setcmd nombre texto</code> crea una respuesta. Para guardar foto, audio, video, GIF, "
+    "documento, sticker o formato, responde al mensaje con <code>/setcmd nombre</code>; conserva el original en el grupo.\n"
+    "Lista: <code>/cmds</code> · Borrar: <code>/delcmd nombre</code>."
+)
+SECTIONS["general"] += (
+    "\n\n💳 <b>Cuenta y créditos</b>\n"
+    "<code>/me</code> · <code>/me ID</code> · responde al mensaje de alguien con <code>/me</code>."
+)
+
 EN_SECTIONS = {
     "downloads": "📥 <b>Music and videos</b>\n\n<code>/play song</code> · <code>/playvideo search</code> · <code>/playdoc search</code>\n<code>/tiktok link</code> · <code>/instagram link</code> · <code>/facebook link</code>\n<code>/cola</code> queue · <code>/historial</code> history · <code>/favoritos</code> favorites",
     "economy": "🎮 <b>Economy and games</b>\n\n<code>/register</code> register · <code>/perfil</code> wallet · <code>/daily</code> reward\n<code>/minar</code> mine · <code>/pescar</code> fish · <code>/ruleta</code> roulette\n<code>/transferir</code> transfer · <code>/tienda</code> shop · <code>/inventario</code> inventory",

@@ -1,4 +1,5 @@
 from html import escape
+import re
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -12,6 +13,7 @@ from app.services.group_tools import (
 )
 
 router = Router()
+_COPY_COMMAND_PREFIX = "__nexora_copy_message__:"
 LOCK_ALIASES = {
     "foto": "fotos", "fotos": "fotos", "video": "videos", "videos": "videos",
     "sticker": "stickers", "stickers": "stickers", "gif": "gifs", "gifs": "gifs",
@@ -79,10 +81,34 @@ async def set_command(message: Message):
     parts = _args(message)
     name = normalize_name(parts[1]) if len(parts) > 1 else ""
     content = parts[2] if len(parts) > 2 else None
+    if not name or not re.fullmatch(r"[a-z0-9_]{1,32}", name):
+        await message.answer("⚠️ El nombre debe usar letras sin tilde, números o _ (máximo 32).")
+        return
+    reserved = {"start", "menu", "me", "perfil", "register", "setcmd", "delcmd", "cmds"}
+    try:
+        from nexora.runtime import COMMANDS
+        reserved.update(COMMANDS)
+    except Exception:
+        pass
+    if name in reserved:
+        await message.answer("⚠️ Ese nombre ya está ocupado por un comando del bot. Elige otro.")
+        return
     if message.reply_to_message and not content:
-        content = message.reply_to_message.text or message.reply_to_message.caption
+        content = f"{_COPY_COMMAND_PREFIX}{message.reply_to_message.message_id}"
+        await upsert_text("custom_commands", message.chat.id, name, content, message.from_user.id)
+        await message.answer(f"✅ Comando <code>/{escape(name)}</code> guardado. Prueba <code>/{escape(name)}</code> o revisa /cmds.", parse_mode="HTML")
+        return
     if not name or not content:
-        await message.answer("Uso: <code>/setcmd nombre respuesta</code> o responde un mensaje.", parse_mode="HTML")
+        await message.answer(
+            "🧩 <b>Cómo crear un comando</b>\n\n"
+            "Texto: <code>/setcmd tratoadmin Aquí va el mensaje</code>\n"
+            "Multimedia o formato: responde al mensaje que quieras guardar con "
+            "<code>/setcmd tratoadmin</code>.\n\n"
+            "El mensaje original debe quedarse en el grupo para que el bot pueda copiarlo.\n\n"
+            "Después, cualquiera del grupo puede usar <code>/tratoadmin</code>. "
+            "Administra la lista con /cmds y elimina uno con /delcmd nombre.",
+            parse_mode="HTML",
+        )
         return
     await upsert_text("custom_commands", message.chat.id, name, content, message.from_user.id)
     await message.answer(f"✅ Comando <code>/{escape(name)}</code> creado.", parse_mode="HTML")
@@ -96,6 +122,7 @@ async def del_command(message: Message):
     await message.answer("✅ Comando eliminado." if deleted else "No encontré ese comando.")
 
 
+@router.message(Command("cmds"))
 async def commands(message: Message):
     names = await list_names("custom_commands", message.chat.id)
     text = "\n".join(f"• <code>/{escape(name)}</code>" for name in names)
@@ -222,4 +249,13 @@ async def custom_command(message: Message):
     name = normalize_name((message.text or "").split("@")[0])
     content = await get_text("custom_commands", message.chat.id, name)
     if content:
-        await message.answer(content)
+        if content.startswith(_COPY_COMMAND_PREFIX):
+            try:
+                source_id = int(content[len(_COPY_COMMAND_PREFIX):])
+                await message.bot.copy_message(chat_id=message.chat.id, from_chat_id=message.chat.id, message_id=source_id)
+            except (TypeError, ValueError):
+                await message.answer("⚠️ Este comando guardó una referencia inválida. Vuelve a configurarlo.")
+            except Exception:
+                await message.answer("⚠️ No pude enviar el mensaje guardado. Puede que el mensaje original ya no esté disponible.")
+        else:
+            await message.answer(content)

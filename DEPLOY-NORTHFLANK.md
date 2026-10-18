@@ -1,96 +1,97 @@
-# Operación en Northflank
+# Despliegue en Northflank
 
-## Arquitectura en producción
+## Arquitectura
 
-El despliegue existente tiene dos servicios conectados al mismo repositorio y rama `main`:
+El proyecto usa dos servicios conectados al mismo repositorio de GitHub:
 
-| Servicio | Dockerfile | Función | Red |
+| Servicio | Dockerfile | Puerto | Réplicas |
 | --- | --- | --- | --- |
-| `nexoraone` | `/Dockerfile` | Bot de Telegram con long polling | Sin puerto público; una instancia |
-| `nexoraoneweb` | `/Dockerfile.web` | Panel, API y healthcheck | Puerto HTTP `8080`; endpoint `/health` |
+| `nexoraoneweb` | `/Dockerfile.web` | HTTP 8080 público para el panel y `/health` | 1 |
+| `nexoraone` | `/Dockerfile` | Sin puerto público; usa long polling de Telegram | 1 |
 
-Ambos servicios usan la misma base Turso. El bot envía un heartbeat cada minuto al endpoint interno de la web. Para confirmar conexión, consulta `/health`: `web_online` y `worker_online` deben ser `true`, y `data_volume` debe indicar `Turso (remoto)`.
+Los servicios deben estar en el mismo proyecto de Northflank. El bot llama a la web por la red privada del proyecto (`http://nexoraoneweb:8080`); no necesita que la API interna sea pública. Ambos servicios usan la base Turso ya inicializada. **No ejecutes una inicialización ni importes datos en esa base durante la migración.**
 
-## Variables y secretos
+## Antes de empezar: plan y costos
 
-Configura los secretos desde la página **Environment** de cada servicio. No los pegues en chats ni los guardes en Git.
+Northflank anuncia el Developer Sandbox con dos servicios, dos tareas programadas y un addon gratis. La cuenta debe registrar un medio de pago para crear recursos, incluso si se elige un plan gratuito. Northflank describe el Sandbox como un entorno para probar y aprender, y dice que no se debe usar para producción. Revisa el plan, recursos y estimación que muestre tu cuenta antes de crear cada servicio; no cambies a Pay-as-you-go ni selecciones recursos con precio. Si la cuenta no muestra claramente ambos servicios a costo cero, pausa aquí.
 
-### En ambos servicios
+La aplicación cabe en el límite de dos servicios: bot y web. No crees otro servicio de base de datos; Turso seguirá siendo externo.
 
-- `DATABASE_BACKEND=turso`
-- `TURSO_DATABASE_URL`: URL de la misma base Turso
-- `TURSO_AUTH_TOKEN`: token de acceso de esa base
-- `NEXORA_INTERNAL_API_KEY`: misma clave aleatoria en web y bot
-- `NEXORA_ADMIN_ID=7454664711`
-- `NEXORA_BOT_NAME=NEXORA ONE`
-- `BOT_TOKEN`: token actual de `@NexoraOneRoBot`
+## Crear el servicio web
 
-### Solo en el bot `nexoraone`
+1. Enlaza la cuenta de GitHub y el repositorio `JersonEstrada20/NexoraOne`.
+2. Crea el servicio `nexoraoneweb` dentro de un proyecto nuevo o existente. Si creas un proyecto, elige la región disponible más cercana a Santiago: Northflank indica que la región de un proyecto no se puede cambiar después. Selecciona el repositorio y, para la primera validación, la rama `deploy/northflank-migration`.
+3. Elige build con Dockerfile, contexto `/` y Dockerfile `/Dockerfile.web`.
+4. Configura el puerto `8080` como HTTP público. Northflank generará una URL HTTPS para el panel.
+5. Añade las variables privadas de la sección **Variables del servicio web** y despliega una sola réplica.
+6. Cuando el despliegue esté listo, abre `/health` en la URL generada. Debe responder y mostrar Turso como almacenamiento remoto. `worker_online` puede seguir en falso hasta arrancar el bot.
 
-- `NEXORA_API_BASE`: URL HTTPS completa de `nexoraoneweb`, por ejemplo `https://<host>.code.run`
-- `BACKUP_CHAT_ID`: chat privado autorizado para recibir respaldos
-- `NEXORA_DATA_DIR`: directorio temporal local; los datos productivos se guardan en Turso
+## Crear el servicio del bot
 
-### Solo en la web `nexoraoneweb`
+1. Crea el servicio `nexoraone` en el mismo proyecto, con el mismo repositorio y rama.
+2. Elige build con Dockerfile, contexto `/` y Dockerfile `/Dockerfile`.
+3. No agregues puertos públicos. Mantén una réplica para evitar conflictos de long polling de Telegram.
+4. Configura las variables privadas de **Variables del servicio bot**.
+5. En `NEXORA_API_BASE`, usa `http://nexoraoneweb:8080`. En `NEXORA_PANEL_URL`, usa la URL pública HTTPS del servicio web y añade `/admin/panel`.
+6. No arranques simultáneamente este bot y el bot que sigue corriendo en Oracle. Primero detén solo el contenedor/servicio `bot` de Oracle; conserva encendidos la VM y la web de Oracle para poder volver atrás. Después despliega/arranca el bot de Northflank.
 
-- `NEXORA_PANEL_USER`
-- `NEXORA_PANEL_PASSWORD`
-- `NEXORA_PANEL_SECRET`: secreto estable para firmar sesiones; no lo cambies en cada deploy
-- `NEXORA_PANEL_PUBLIC=true` si el login del panel debe estar disponible públicamente
-- `NEXORA_DATA_DIR=/data`
+## Variables del servicio web
 
-La web también puede usar `BOT_TOKEN` para algunas integraciones de Telegram. Debe ser el token actual del mismo bot.
+Configura desde Environment/Secrets de Northflank; nunca las guardes en Git.
 
-## Actualizar la aplicación
+| Variable | Valor |
+| --- | --- |
+| `DATABASE_BACKEND` | `turso` |
+| `TURSO_DATABASE_URL` | URL actual de la base Turso; cópiala desde la consola de Turso |
+| `TURSO_AUTH_TOKEN` | Token nuevo de Turso. Revoca el token anterior y crea uno nuevo antes del despliegue |
+| `NEXORA_INTERNAL_API_KEY` | Clave interna actual compartida con el bot |
+| `NEXORA_ADMIN_ID` | ID numérico del administrador principal |
+| `NEXORA_BOT_NAME` | `NEXORA ONE` |
+| `NEXORA_DATA_DIR` | `/data` |
+| `NEXORA_PANEL_PUBLIC` | `true` |
+| `NEXORA_PANEL_USER` | Usuario de acceso al panel |
+| `NEXORA_PANEL_PASSWORD` | Contraseña fuerte del panel |
+| `NEXORA_PANEL_SECRET` | Secreto de sesión estable; conserva el actual |
+| `BOT_TOKEN` | Token actual del bot, requerido por algunas funciones del panel |
+| `PORT` | `8080` |
 
-1. Envía los cambios a `main` en GitHub; Northflank debe iniciar un build desde ese commit.
-2. Comprueba que el build de ambos servicios termina correctamente y que el bot sigue en una sola instancia.
-3. Revisa los logs sin copiar tokens ni claves.
-4. Consulta `/health`. La fecha `last_worker_seen` debe actualizarse y `worker_online` debe quedar en `true`.
-5. Confirma `/status` en Telegram y realiza una comprobación funcional de bajo riesgo.
+## Variables del servicio bot
 
-Un build verde confirma que la imagen se creó; no confirma por sí solo la conexión de los dos servicios o el funcionamiento de cada comando.
+| Variable | Valor |
+| --- | --- |
+| `BOT_TOKEN` | El mismo token actual del bot |
+| `OWNER_USER_ID` | ID numérico del dueño |
+| `BACKUP_CHAT_ID` | ID del chat privado de respaldos |
+| `DATABASE_BACKEND` | `turso` |
+| `TURSO_DATABASE_URL` | URL actual de la base Turso; cópiala desde la consola de Turso |
+| `TURSO_AUTH_TOKEN` | Token nuevo de Turso. Revoca el token anterior y crea uno nuevo antes del despliegue |
+| `NEXORA_INTERNAL_API_KEY` | La misma clave interna usada por la web |
+| `NEXORA_ADMIN_ID` | ID numérico del administrador principal |
+| `NEXORA_BOT_NAME` | `NEXORA ONE` |
+| `NEXORA_DATA_DIR` | `/data` |
+| `NEXORA_API_BASE` | `http://nexoraoneweb:8080` |
+| `NEXORA_PANEL_URL` | `https://<dominio-generado-de-la-web>/admin/panel` |
 
-### Bloquear despliegues si fallan las pruebas
+No copies valores desde capturas o logs; escribe los secretos directamente en los campos protegidos de Northflank. No rotes el token de Telegram, credenciales de Turso ni la clave interna durante el cambio.
 
-El workflow actual comprueba Python y JavaScript en cada PR y push. La regla de protección de `main` se configura en GitHub y no se activa desde el YAML del repositorio. Al habilitarla, exige PR y el check `Tests / test`; no exijas aprobación adicional si eres el único mantenedor. Mantén desactivados force pushes y eliminación de la rama.
+## Verificar y cambiar el tráfico
 
-El workflow `.github/workflows/tests.yml` ejecuta la suite Python y las pruebas JavaScript al hacer push y al abrir un pull request. Northflank CI/CD, por separado, construye y despliega la rama conectada; ejecutar GitHub Actions no bloquea ese disparador automáticamente.
+1. Comprueba que `/health` de la web responde y que indica `Turso (remoto)`.
+2. Arranca el bot en Northflank después de detener el bot de Oracle. Revisa sus logs y consulta `/status` en Telegram; la web debe aparecer `200`, el worker en línea y la base Turso remota.
+3. Prueba el panel, `/me`, y una operación de bajo riesgo del bot. Confirma que el panel muestra la información que ya estaba guardada en Turso.
+4. Mantén Oracle intacto durante la validación. Para revertir: detén el bot de Northflank y vuelve a iniciar el bot de Oracle. Nunca dejes dos bots haciendo polling a la vez.
+5. Después de confirmar estabilidad, conecta los servicios a `main` o configura la rama y despliegue continuo que quieras usar. Northflank puede compilar Dockerfiles desde GitHub en cada cambio de la rama seleccionada.
 
-Para que solo lleguen a `main` cambios con pruebas aprobadas:
+## Seguridad y recuperación
 
-1. En GitHub, abre **Settings → Branches** y crea una regla para `main`.
-2. Activa **Require status checks to pass before merging** y selecciona el check `Tests / test` después de que aparezca en una ejecución reciente.
-3. Activa **Require a pull request before merging**. Los cambios deben entrar por PR; los pushes directos a `main` dejarán de funcionar.
-4. Conserva en Northflank CI/CD el build y deploy automático de `main`. El merge solo actualizará la rama cuando el check requerido haya terminado correctamente.
+- `.env`, bases SQLite y llaves privadas no deben subirse al repositorio.
+- Los archivos subidos por el panel se guardan en Turso; no dependas del disco efímero del contenedor.
+- Mantén los logs privados y no publiques tokens, claves ni variables completas.
+- Conserva Oracle como respaldo hasta validar el bot, el panel, la base, los respaldos y las funciones principales en Northflank.
+- Consulta el panel de uso y facturación de Northflank después del primer despliegue y antes de cambiar planes.
 
-GitHub puede exigir checks antes de permitir cambios en una rama protegida. Northflank también permite workflows por evento de check suite, pero esa señal no espera a todos los checks de un commit; por eso no se usa como único bloqueo de producción.
+## Referencias oficiales
 
-Referencias: [protección de ramas en GitHub](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) y [workflows de Northflank](https://northflank.com/docs/v1/application/release/configure-workflows).
-
-## Inicializar una base Turso nueva
-
-La base de producción ya existe y está inicializada. **No ejecutes estos pasos sobre la base actual ni importes datos antiguos.** Para una base nueva y vacía:
-
-1. Configura `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN` en el entorno local privado.
-2. Activa el backend remoto solo para el proceso de inicialización y ejecuta:
-
-   ```powershell
-   $env:DATABASE_BACKEND = "turso"
-   .\.venv\Scripts\python.exe scripts/init_turso.py --initialize
-   ```
-
-3. Espera los mensajes de inicialización completa. Si el proceso falla, no despliegues contra esa base hasta revisar la causa.
-4. Verifica la conexión de lectura con `python scripts/check_turso.py` y configura los mismos secretos en los dos servicios.
-
-No compartas ni incluyas en capturas el token de Turso. Al terminar, cierra la terminal o elimina la variable temporal de entorno.
-
-## Respaldo y recuperación
-
-Los respaldos unificados se exportan a SQLite y se envían al chat privado configurado. Antes de cualquier restauración, pausa bot y web para evitar escrituras concurrentes. Comprueba el respaldo fuera de producción antes de restaurar; no uses archivos SQLite locales como si fueran una copia actual de Turso.
-
-Turso puede rechazar escrituras concurrentes con `SQLITE_BUSY`. Una operación con resultado ambiguo debe verificarse antes de repetirse, especialmente si implica créditos, saldos o entregas.
-
-## Costos y operación
-
-Revisa los planes, instancias y cargos que muestra tu cuenta de Northflank antes de cambiar recursos. Mantén una instancia del bot y desactiva o elimina servicios que ya no uses desde Northflank; borrar archivos locales no detiene recursos alojados.
+- [Precios y Developer Sandbox](https://northflank.com/docs/v1/application/billing/pricing-on-northflank)
+- [Crear servicios desde Git y Dockerfile](https://northflank.com/docs/v1/application/build/build-with-a-dockerfile)
+- [Puertos internos entre servicios](https://northflank.com/docs/v1/application/network/configure-ports)

@@ -6,13 +6,14 @@ Bot de Telegram **@NexoraOneRoBot** y panel web para administrar usuarios, solic
 
 ## Estado del despliegue
 
-La producción está separada en dos servicios de Northflank:
+La migración a Northflank está en preparación. **Hasta completar el corte, Oracle Cloud sigue siendo producción y el bot de Oracle no se debe apagar.** La arquitectura destino usa dos servicios del repositorio de GitHub:
 
-- **Bot**: servicio `nexoraone`, ejecuta `Dockerfile` y usa long polling de Telegram. Debe mantenerse en una instancia y no necesita puerto público.
-- **Web**: servicio `nexoraoneweb`, ejecuta `Dockerfile.web`, publica HTTP en el puerto `8080` y ofrece el panel y la API.
-- **Base de datos**: ambos servicios usan la misma base remota de Turso. El endpoint `/health` informa el estado de la web, la base y el heartbeat del bot.
+- **Bot**: servicio `nexoraone`, ejecuta `/Dockerfile` y usa long polling de Telegram; debe tener una sola réplica.
+- **Web**: servicio `nexoraoneweb`, ejecuta `/Dockerfile.web`, sirve el panel y la API por HTTP 8080.
+- **Base de datos**: bot y web usan la misma base remota existente de Turso. No se importan datos ni se crea una segunda base.
+- **Acceso al panel**: la web obtiene un dominio HTTPS de Northflank; el bot usa la dirección privada del servicio web.
 
-La guía de variables, builds y recuperación está en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md). No compartas archivos `.env`, tokens de Telegram, tokens de Turso ni claves internas.
+Sigue [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md) para la migración, validación y reversión. [DEPLOY-ORACLE.md](DEPLOY-ORACLE.md) queda como guía de respaldo. No compartas archivos `.env`, tokens de Telegram, tokens de Turso ni claves internas.
 
 ## Funciones
 
@@ -58,7 +59,7 @@ Para ejecutar la web localmente, configura `NEXORA_PANEL_SECRET`, `NEXORA_PANEL_
 
 En producción, bot y web deben tener `DATABASE_BACKEND=turso` y los mismos `TURSO_DATABASE_URL` y `TURSO_AUTH_TOKEN`. La web también requiere una `NEXORA_PANEL_SECRET` estable. El bot necesita la URL HTTPS de la web en `NEXORA_API_BASE` y la misma `NEXORA_INTERNAL_API_KEY` configurada en la web.
 
-La base productiva ya está inicializada. **No vuelvas a inicializar ni importes otra base sobre la producción.** Para crear una base Turso nueva, sigue la sección de inicialización en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md).
+La base productiva ya está inicializada. **No vuelvas a inicializar ni importes otra base durante la migración.** Los dos servicios de Northflank deben usar la misma URL y token de Turso que la producción actual.
 
 ## Verificación
 
@@ -69,14 +70,14 @@ python -m unittest discover -s tests -q
 node --test tests/panel-safety.test.cjs
 ```
 
-El flujo de despliegue también está descrito en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md). `/health` comprueba la web y el backend; `worker_online:true` confirma que el bot está enviando heartbeats.
+El flujo y el orden seguro del cambio están descritos en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md). `/health` comprueba la web y el backend; `worker_online:true` confirma que el bot está enviando heartbeats.
 
 ## Seguridad y datos
 
-- Los secretos van en variables protegidas de Northflank o en el `.env` local, que Git ignora.
+- Los secretos van en el gestor de secretos del proveedor de despliegue o en el `.env` local protegido, siempre fuera de Git.
 - No subas bases locales ni datos de usuarios al repositorio.
 - Mantén una sola instancia de bot para evitar conflictos de long polling.
 - Los archivos `.db` locales no son la fuente de datos de producción cuando `DATABASE_BACKEND=turso`.
 - La eliminación manual de historiales personales es solo para el fundador y exige vista previa, confirmación y respaldo previo. El historial de descargas se purga a los 30 días; el detalle y las limitaciones están en [DATA-RETENTION.md](DATA-RETENTION.md).
 - La restauración web está limitada a bases SQLite locales; valida integridad y guarda una copia de seguridad antes de reemplazar archivos.
-- La política de retención inicial está en [DATA-RETENTION.md](DATA-RETENTION.md); la protección de `main` requiere activar en GitHub la regla de PR y el check obligatorio descritos en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md).
+- La política de retención inicial está en [DATA-RETENTION.md](DATA-RETENTION.md); las recomendaciones de respaldo están en [DEPLOY-NORTHFLANK.md](DEPLOY-NORTHFLANK.md).

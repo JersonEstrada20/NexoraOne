@@ -25,7 +25,7 @@ ADMIN.update({"dm": admin_tools.dm_command, "user": admin_tools.user_command,
               "rquick": admin_requests.quick_reply_command, "requestlog": admin_requests.request_log_command,
               "reopen": admin_requests.reopen_request,
               "status": system_ops.status_command})
-COMMANDS = {**PUBLIC, **ADMIN}
+COMMANDS = {**PUBLIC, **ADMIN, "me": me.me_command}
 COMMANDS.update({name: make_request_command(name, cost, category, validation)
                  for name, cost, category, validation in REQUEST_COMMANDS})
 ACTIONS = {"catalog": cmds.cmds_command, "account": me.me_command,

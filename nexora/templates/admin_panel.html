@@ -2,137 +2,11 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NEXORA ONE Panel</title>
-  <style>
-    :root { color-scheme: light; --bg:#f5f3ee; --bg-grad-1:#f7f1e8; --bg-grad-2:#efe7d8; --ink:#1e1d1a; --muted:#6a655c; --card:#fffdf8; --surface:#fff8ef; --surface-2:#f0e6d6; --line:#ddd2bf; --accent:#1f6f5f; --accent-2:#d99b38; --danger:#b64a3c; --accent-3:#325f9b; --button-ink:#fffdf8; --danger-ink:#fffdf8; --preview-bg-1:#d9ecff; --preview-bg-2:#c8e2fb; --preview-line:#b8d2ea; --bubble-bg:#ffffff; --bubble-ink:#1b1f22; --flash-bg:#e7f4ed; --flash-line:#b9dec8; --input-bg:#fffdfa; --shadow-soft:0 10px 30px rgba(79,54,24,.08); --shadow-card:0 10px 20px rgba(79,54,24,.06); }
-    body.dark { color-scheme: dark; --bg:#09110f; --bg-grad-1:#07110e; --bg-grad-2:#10201b; --ink:#f7f1e7; --muted:#9fb0a8; --card:#101917; --surface:#17221f; --surface-2:#1d2a26; --line:#273734; --accent:#55d4b1; --accent-2:#f0b45b; --danger:#e17368; --accent-3:#8bb5ff; --button-ink:#06231d; --danger-ink:#1d0907; --preview-bg-1:#0d2331; --preview-bg-2:#163447; --preview-line:#285166; --bubble-bg:#1a313a; --bubble-ink:#f6efe4; --flash-bg:#122c22; --flash-line:#275141; --input-bg:#0d1614; --shadow-soft:0 18px 48px rgba(0,0,0,.32); --shadow-card:0 16px 34px rgba(0,0,0,.28); }
-    * { box-sizing:border-box; }
-    body { margin:0; font-family:Segoe UI, sans-serif; background:linear-gradient(180deg,var(--bg-grad-1) 0%,var(--bg-grad-2) 100%); color:var(--ink); transition:background .2s ease,color .2s ease; }
-    .wrap { max-width:1400px; margin:0 auto; padding:24px; }
-    h1,h2,h3 { margin:0 0 12px; }
-    .hero { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:24px; margin-bottom:20px; box-shadow:var(--shadow-soft); }
-    .layout { display:grid; grid-template-columns:240px 1fr; gap:20px; align-items:start; }
-    .grid { display:grid; grid-template-columns: 360px 1fr; gap:20px; align-items:start; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:var(--shadow-card); }
-    label { display:block; font-size:13px; color:var(--muted); margin:10px 0 6px; }
-    input, select, textarea, button { width:100%; border-radius:12px; border:1px solid var(--line); padding:10px 12px; font:inherit; }
-    input, select, textarea { background:var(--input-bg); color:var(--ink); }
-    textarea { min-height:78px; resize:vertical; }
-    button { cursor:pointer; background:var(--accent); color:var(--button-ink); border:none; font-weight:800; }
-    button.secondary { background:var(--accent-2); color:#241b0f; }
-    button.danger { background:var(--danger); color:var(--danger-ink); }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
-    th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
-    .badge { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700; }
-    .ok { background:#dff3ea; color:#1e6b4e; }
-    .off { background:#f7dddd; color:#8a2f2f; }
-    .muted { color:var(--muted); }
-    .flash { margin:0 0 16px; padding:12px 14px; border-radius:12px; background:var(--flash-bg); border:1px solid var(--flash-line); }
-    .stack { display:grid; gap:10px; }
-    .inline { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-    .actions { display:flex; gap:8px; }
-    .actions form { display:inline-block; }
-    .small { font-size:12px; color:var(--muted); }
-    .toolbar { display:flex; justify-content:space-between; gap:12px; align-items:center; }
-    .search-form { display:flex; gap:8px; min-width:360px; }
-    .search-form input { min-width:220px; }
-    .search-form button { width:auto; white-space:nowrap; }
-    .hero a { color:var(--accent); font-weight:700; text-decoration:none; }
-    .sidebar { position:sticky; top:16px; display:grid; gap:10px; }
-    .side-link { display:block; padding:12px 14px; border-radius:14px; background:var(--card); border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:700; }
-    .content { display:grid; gap:20px; }
-    .summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; }
-    .metric { padding:16px; border-radius:16px; border:1px solid var(--line); background:var(--surface); }
-    .metric h3 { margin:8px 0 2px; font-size:28px; }
-    .pill { display:inline-block; padding:5px 10px; border-radius:999px; background:var(--surface-2); font-size:12px; font-weight:700; color:var(--ink); }
-    .section-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-    .three { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
-    .subnav { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-    .subnav a { padding:8px 12px; border-radius:999px; background:var(--surface-2); color:var(--ink); text-decoration:none; font-size:13px; font-weight:700; }
-    .mini-card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px; }
-    .preview-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-top:18px; }
-    .preview-card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px; white-space:pre-wrap; font-size:13px; line-height:1.45; }
-    .side-link.active { background:color-mix(in srgb, var(--accent) 16%, var(--card)); border-color:color-mix(in srgb, var(--accent) 42%, var(--line)); color:var(--ink); }
-    .theme-toggle { padding:10px 14px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; font-weight:700; }
-    .telegram-preview { background:linear-gradient(180deg,var(--preview-bg-1) 0%,var(--preview-bg-2) 100%); border:1px solid var(--preview-line); border-radius:18px; padding:16px; min-height:180px; }
-    .telegram-bubble { background:var(--bubble-bg); color:var(--bubble-ink); border-radius:18px 18px 18px 6px; padding:12px 14px; box-shadow:0 4px 12px rgba(0,0,0,.12); }
-    .pager { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:14px 0; }
-    .pager a { text-decoration:none; color:var(--accent); font-weight:700; }
-    .toolbar-right { display:flex; gap:10px; align-items:center; }
-    .command-tools { grid-template-columns:repeat(2, minmax(0, 1fr)); align-items:start; }
-    .table-scroll { overflow-x:auto; }
-    .commands-table { min-width:920px; }
-    .commands-table td:nth-child(1) { min-width:220px; }
-    .commands-table td:nth-child(2) { min-width:130px; }
-    .commands-table td:nth-child(3), .commands-table td:nth-child(5) { white-space:nowrap; }
-    .commands-table td:nth-child(6) { width:420px; }
-    .command-edit summary { cursor:pointer; display:inline-flex; align-items:center; justify-content:center; min-width:92px; padding:8px 12px; border-radius:999px; background:var(--surface-2); color:var(--ink); font-weight:700; list-style:none; }
-    .command-edit summary::-webkit-details-marker { display:none; }
-    .command-edit[open] summary { margin-bottom:10px; }
-    .command-edit form { min-width:380px; display:grid; gap:8px; }
-    .command-edit textarea { min-height:64px; }
-    .alert-card { border-color:color-mix(in srgb, var(--danger) 45%, var(--line)); background:color-mix(in srgb, var(--danger) 10%, var(--card)); }
-    .alert-card strong { color:var(--danger); }
-    .compact-profile { display:grid; grid-template-columns:1.2fr 1fr; gap:14px; align-items:start; }
-    .compact-profile .summary { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-    .profile-facts { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
-    .profile-fact { padding:10px 12px; border-radius:12px; background:var(--surface); border:1px solid var(--line); }
-    .profile-fact strong { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-    .panel-details summary { cursor:pointer; font-weight:800; list-style:none; display:flex; justify-content:space-between; align-items:center; gap:10px; }
-    .panel-details summary::-webkit-details-marker { display:none; }
-    .panel-details summary::after { content:"Abrir"; font-size:12px; font-weight:700; color:var(--accent); }
-    .panel-details[open] summary::after { content:"Cerrar"; }
-    .sales-strip { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
-    .sales-card { padding:14px; border-radius:14px; background:var(--surface); border:1px solid var(--line); }
-    .sales-card h3 { font-size:26px; margin:6px 0 2px; }
-    body.dark .hero { background:linear-gradient(180deg, rgba(16,25,23,.95) 0%, rgba(15,23,21,.9) 100%); }
-    body.dark .card { background:linear-gradient(180deg, rgba(17,26,24,.98) 0%, rgba(15,22,21,.95) 100%); }
-    body.dark .side-link { background:linear-gradient(180deg, rgba(18,28,26,.96) 0%, rgba(15,23,21,.94) 100%); }
-    body.dark .side-link.active { background:linear-gradient(180deg, rgba(26,56,49,.98) 0%, rgba(19,44,39,.98) 100%); color:#f7f1e7; border-color:#3d665c; box-shadow:0 10px 24px rgba(0,0,0,.22); }
-    body.dark .metric { background:linear-gradient(180deg, rgba(24,36,33,.98) 0%, rgba(19,30,28,.96) 100%); }
-    body.dark .preview-card { background:linear-gradient(180deg, rgba(20,31,29,.98) 0%, rgba(18,28,26,.96) 100%); }
-    body.dark .mini-card { background:linear-gradient(180deg, rgba(21,32,29,.98) 0%, rgba(18,29,27,.96) 100%); }
-    body.dark .subnav a { background:linear-gradient(180deg, rgba(31,45,41,.96) 0%, rgba(26,37,35,.96) 100%); color:#f7f1e7; border:1px solid #314541; }
-    body.dark .theme-toggle { background:linear-gradient(180deg, rgba(20,31,29,.98) 0%, rgba(16,25,23,.98) 100%); }
-    body.dark .flash { color:#dff7ea; }
-    body.dark .pill { background:#243631; color:#dbf8ec; }
-    body.dark .ok { background:#173a30; color:#92efc9; }
-    body.dark .off { background:#432421; color:#ffb7b0; }
-    body.dark button { box-shadow:0 10px 24px rgba(0,0,0,.18); }
-    body.dark button.secondary { color:#2d1c08; }
-    body.dark input::placeholder, body.dark textarea::placeholder { color:#7f938a; }
-    body.dark .telegram-bubble { border:1px solid rgba(255,255,255,.06); }
-    @media (max-width: 1100px) { .layout, .grid, .section-grid, .summary, .three, .preview-grid, .command-tools, .compact-profile, .sales-strip { grid-template-columns:1fr; } .sidebar { position:static; } .toolbar { align-items:stretch; flex-direction:column; } .toolbar-right, .search-form { width:100%; } .search-form { min-width:0; } .search-form input { min-width:0; } }
-    @media (max-width: 760px) {
-      .wrap { padding:10px; }
-      .hero, .card { border-radius:12px; padding:12px; box-shadow:none; }
-      .hero { margin-bottom:12px; }
-      h1 { font-size:24px; }
-      h2 { font-size:20px; }
-      .layout, .content { gap:12px; }
-      .sidebar { display:flex; overflow-x:auto; gap:8px; padding-bottom:4px; scroll-snap-type:x mandatory; }
-      .side-link { flex:0 0 auto; min-width:132px; padding:10px; text-align:center; font-size:13px; scroll-snap-align:start; }
-      .inline, .profile-facts { grid-template-columns:1fr; }
-      .toolbar-right, .search-form { flex-direction:column; align-items:stretch; gap:8px; }
-      .search-form button, .theme-toggle { width:100%; }
-      .subnav { display:flex; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; }
-      .subnav a { flex:0 0 auto; text-align:center; white-space:nowrap; }
-      table { display:block; overflow:auto; white-space:nowrap; font-size:12px; max-height:70vh; border:1px solid var(--line); border-radius:12px; }
-      thead th { position:sticky; top:0; z-index:1; background:var(--card); }
-      th, td { padding:8px 6px; }
-      td { max-width:240px; overflow:hidden; text-overflow:ellipsis; }
-      td details, td form, td .small { white-space:normal; }
-      .actions { display:grid; grid-template-columns:1fr; align-items:stretch; }
-      .metric { padding:12px; }
-      .metric h3, .sales-card h3 { font-size:22px; overflow-wrap:anywhere; }
-      input, select, textarea, button { min-height:42px; }
-      .command-edit form { min-width:0; }
-      .preview-grid { display:none; }
-    }
-  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}">
 </head>
-<body data-section="{{ active_section }}">
+<body data-section="{{ active_section }}" data-csrf-token="{{ csrf_token() }}">
   <div class="wrap">
     <div class="hero">
       <div class="toolbar">
@@ -148,7 +22,7 @@
             <input name="gq" value="{{ global_q }}" placeholder="Buscar ID, username, comando o vendedor">
             <button type="submit">Buscar</button>
           </form>
-          <button class="theme-toggle" type="button" onclick="toggleTheme()">Tema</button>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Cambiar tema visual" aria-pressed="false">🌙 Tema oscuro</button>
           <a href="{{ url_for('panel_logout') }}">Cerrar sesión</a>
         </div>
       </div>
@@ -172,22 +46,20 @@
       </div>
       {% endif %}
       <p class="small">Panel privado NEXORA ONE conectado a tu entorno de producción.</p>
-      <div class="subnav">
-        {% for nav in panel_nav_items[:9] %}
-        <a href="{{ url_for('admin_panel', section=nav.section) }}">{{ nav.label }}</a>
-        {% endfor %}
-      </div>
     </div>
     <div class="layout">
       <div class="sidebar">
         {% for nav in panel_nav_items %}
-        <a class="side-link {% if active_section == nav.section %}active{% endif %}" href="{{ url_for('admin_panel', section=nav.section) }}">{{ nav.label }}</a>
+        <a class="side-link {% if active_section == nav.section %}active{% endif %}" href="{{ url_for('admin_panel', section=nav.section) }}" {% if active_section == nav.section %}aria-current="page"{% endif %}>
+          <span class="nav-icon" aria-hidden="true">{{ nav.icon }}</span><span>{{ nav.label }}</span>
+        </a>
         {% endfor %}
       </div>
       <div class="content">
       {% if active_section == 'resumen' %}
       <div id="sec-resumen" class="card">
         <h2>Resumen</h2>
+        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">Resumen en modo rápido: los análisis del historial se cargan en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a> porque la base remota está tardando.</div>{% endif %}
         <div class="summary">
           <div class="metric"><span class="pill">Categorías</span><h3>{{ categories|length }}</h3><div class="small">Bloques del catálogo</div></div>
           <div class="metric"><span class="pill">Comandos</span><h3>{{ commands|length }}</h3><div class="small">Total registrados</div></div>
@@ -198,13 +70,13 @@
         <div class="section-grid" style="margin-top:16px;">
           <div class="mini-card">
             <div class="toolbar"><strong>Atención</strong><a href="{{ url_for('admin_panel', section='solicitudes') }}">Abrir bandeja</a></div>
-            <h3>{{ dashboard.pendientes }} solicitudes pendientes</h3>
+            <h3>{% if dashboard.analytics_loaded %}{{ dashboard.pendientes }}{% else %}—{% endif %} solicitudes pendientes</h3>
             <div class="small">Solicitudes recibidas que todavía esperan respuesta.</div>
           </div>
           {% if panel_role == 'FUNDADOR' %}
           <div class="mini-card">
             <div class="toolbar"><strong>Errores del último día</strong><a href="{{ url_for('admin_panel', section='sistema') }}">Ver sistema</a></div>
-            <h3>{{ dashboard.errores_recientes }}</h3>
+            <h3>{% if dashboard.analytics_loaded %}{{ dashboard.errores_recientes }}{% else %}—{% endif %}</h3>
             <div class="small">Dentro de los últimos 50 errores guardados.</div>
           </div>
           {% endif %}
@@ -560,6 +432,7 @@
       {% endif %}
       {% if active_section == 'compras' %}
       <div class="stack">
+        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">Los totales históricos detallados están en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a>. La lista de compras y sus filtros siguen disponibles aquí.</div>{% endif %}
         <div class="card">
           <h2>Crear compra manual</h2>
           <form method="post" action="{{ url_for('admin_create_purchase') }}" class="inline">
@@ -1992,23 +1865,6 @@
     </div>
   </div>
 </body>
-<script>
-    const csrfToken = "{{ csrf_token() }}";
-    document.querySelectorAll('form[method="post"], form[method="POST"]').forEach((form) => {
-      if (!form.querySelector('input[name="csrf_token"]')) {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = 'csrf_token';
-        input.value = csrfToken;
-        form.appendChild(input);
-      }
-    });
-    const storedTheme = localStorage.getItem('nexora-panel-theme') || localStorage.getItem('spidersyn-panel-theme');
-    if (storedTheme === 'dark') document.body.classList.add('dark');
-  function toggleTheme() {
-      document.body.classList.toggle('dark');
-      localStorage.setItem('nexora-panel-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
-    }
-  </script>
+<script src="{{ url_for('static', filename='panel-ui.js') }}" defer></script>
   <script src="{{ url_for('static', filename='panel-safety.js') }}" defer></script>
 </html>

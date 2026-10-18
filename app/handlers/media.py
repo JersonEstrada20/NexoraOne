@@ -892,15 +892,21 @@ async def download_queue(message: Message):
 @router.message(Command("play"))
 async def play(message: Message, command: CommandObject):
     if not command.args:
-        await message.reply("Usa /play nombre o enlace de YouTube")
+        await message.reply(
+            "🎵 <b>Buscar música</b>\n\n"
+            "Usa <code>/play nombre</code> o envía un enlace de YouTube.",
+            parse_mode="HTML",
+        )
         return
-    status = await message.reply("🔎 Buscando canciones…")
+    status = await message.reply("🔎 <b>Buscando en YouTube…</b>", parse_mode="HTML")
     try:
         results = await asyncio.wait_for(
             asyncio.to_thread(_search_youtube, command.args), timeout=45
         )
         if not results:
-            await status.edit_text("❌ No encontré canciones con ese nombre.")
+            await status.edit_text(
+                "🔎 No encontré resultados. Prueba con otro nombre o revisa el enlace."
+            )
             return
         token = secrets.token_hex(4)
         if len(SEARCH_CACHE) >= 100:
@@ -909,9 +915,17 @@ async def play(message: Message, command: CommandObject):
         text, markup = _search_menu(results, token, 0, "audio")
         await status.edit_text(text, parse_mode="HTML", reply_markup=markup)
     except asyncio.TimeoutError:
-        await status.edit_text("YouTube tardó demasiado en responder. Intenta nuevamente.")
+        await status.edit_text(
+            "⏳ YouTube tardó en responder. Inténtalo de nuevo en un momento."
+        )
     except Exception as exc:
-        await status.edit_text(f"❌ No pude buscar ahora. {str(exc).splitlines()[-1][:250]}")
+        logger.exception(
+            "Falló la búsqueda de YouTube para el usuario %s",
+            message.from_user.id if message.from_user else "desconocido",
+        )
+        await status.edit_text(
+            "⚠️ No pude completar la búsqueda ahora. Inténtalo de nuevo más tarde."
+        )
 
 
 @router.callback_query(F.data.startswith("media:page:"))

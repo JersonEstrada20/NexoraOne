@@ -111,13 +111,37 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
 
     target_id = str(invoker.id)
+    replied_user = getattr(getattr(msg, "reply_to_message", None), "from_user", None)
+    if replied_user:
+        target_id = str(replied_user.id)
     if context.args:
         arg = (context.args[0] or "").strip()
         if arg.isdigit():
             target_id = arg
+        elif arg.startswith("@") and msg.chat.type != "private":
+            from app.services.user_directory import resolve_username
+            resolved = await resolve_username(context.bot, msg.chat_id, arg)
+            if resolved:
+                target_id = str(resolved)
+            else:
+                await msg.reply_text(
+                    "🔎 No pude ubicar ese @usuario entre los miembros que el bot conoce. "
+                    "Responde a uno de sus mensajes con <code>/me</code> o usa su ID.",
+                    parse_mode="HTML",
+                    reply_to_message_id=msg.message_id,
+                )
+                return
+        elif arg.startswith("@"):
+            await msg.reply_text(
+                "🔎 Para consultar por @usuario, usa el comando en el grupo donde está esa persona. "
+                "También puedes responder a uno de sus mensajes con <code>/me</code> o usar su ID.",
+                parse_mode="HTML",
+                reply_to_message_id=msg.message_id,
+            )
+            return
         else:
             await msg.reply_text(
-                "⚠️ Formato inválido. Usa <code>/perfil</code> o <code>/perfil ID_TG</code>.",
+                "⚠️ Formato inválido. Usa <code>/me</code>, <code>/me ID_TG</code> o responde al mensaje de alguien.",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_to_message_id=msg.message_id,
