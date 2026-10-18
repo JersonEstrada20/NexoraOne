@@ -174,7 +174,7 @@ def _profile_card(row, reputation: int, crown: bool) -> bytes:
         title_font = body_font = small_font = ImageFont.load_default()
     level = _level(row["xp"])
     draw.rounded_rectangle((45, 40, 955, 515), radius=28, outline=(65, 190, 220), width=3, fill=(18, 32, 52))
-    draw.text((80, 75), "DOXERTUBE · PERFIL", font=small_font, fill=(107, 220, 220))
+    draw.text((80, 75), "NEXORA ONE · PERFIL", font=small_font, fill=(107, 220, 220))
     draw.text((80, 125), f"{row['name'][:28]}{'  👑' if crown else ''}", font=title_font, fill="white")
     draw.text((80, 220), f"S/ {row['coins']}", font=title_font, fill=(255, 216, 92))
     draw.text((80, 285), f"Nivel {level}   ·   {row['xp']} XP", font=body_font, fill=(230, 240, 250))
@@ -194,7 +194,7 @@ async def profile_card(message: Message):
     row = await _user(target.id, target.full_name, message.chat.id)
     crown = await _item_count(target.id, "corona") > 0
     data = _profile_card(row, row["reputation"], crown)
-    await message.answer_photo(BufferedInputFile(data, filename="perfil-doxertube.png"), caption="🎴 Tu tarjeta de perfil")
+    await message.answer_photo(BufferedInputFile(data, filename="perfil-nexora-one.png"), caption="🎴 Tu tarjeta de perfil · NEXORA ONE")
 
 
 @router.message(Command("misiones"))

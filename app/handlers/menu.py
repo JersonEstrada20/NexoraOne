@@ -1,6 +1,7 @@
 from html import escape
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -154,15 +155,15 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
     builder = InlineKeyboardBuilder()
     buttons_es = [
         ("📥 Música y videos", "downloads"), ("🎮 Economía y juegos", "economy"),
-        ("⭐ Generales", "general"), ("🚨 Moderación", "moderation"),
-        ("⚙️ Configuración", "settings"), ("🛡 Staff", "staff"),
+        ("⭐ Ayuda y utilidades", "general"), ("🚨 Moderación", "moderation"),
+        ("⚙️ Ajustes del grupo", "settings"), ("🛡 Equipo admin", "staff"),
         ("🧰 Herramientas de grupo", "grouptools"),
         ("📖 Guía de admins", "guide"),
     ]
     buttons_en = [
         ("📥 Music and videos", "downloads"), ("🎮 Economy and games", "economy"),
-        ("⭐ General", "general"), ("🚨 Moderation", "moderation"),
-        ("⚙️ Settings", "settings"), ("🛡 Staff", "staff"),
+        ("⭐ Help and tools", "general"), ("🚨 Moderation", "moderation"),
+        ("⚙️ Group settings", "settings"), ("🛡 Admin team", "staff"),
         ("🧰 Group tools", "grouptools"), ("📖 Admin guide", "guide"),
     ]
     buttons = buttons_en if language == "en" else buttons_es
@@ -198,7 +199,7 @@ def menu_keyboard(section: str = "home", language: str = "es", role: str = "admi
     if role != "user" and section == "settings":
         builder.button(text="\U0001fa84 Guided setup" if language == "en" else "\U0001fa84 Configuración guiada", callback_data="setup:home")
     if section != "home":
-        builder.button(text="🏠 Home" if language == "en" else "🏠 Inicio", callback_data="mainmenu:home")
+        builder.button(text="↩️ All categories" if language == "en" else "↩️ Volver a categorías", callback_data="mainmenu:home")
         builder.adjust(2)
     else:
         builder.adjust(2)
@@ -263,6 +264,9 @@ async def menu_role(bot, chat_id, user_id):
 @router.callback_query(F.data.startswith("mainmenu:"))
 async def menu_callback(callback: CallbackQuery):
     section = callback.data.split(":", 1)[1]
+    if section != "home" and section not in SECTIONS:
+        await callback.answer("Esta opción ya no está disponible. Abre /start para ver el menú actualizado.", show_alert=True)
+        return
     role = await menu_role(callback.bot, callback.message.chat.id, callback.from_user.id)
     if role == "user" and section in {"moderation", "settings", "staff", "grouptools", "guide"}:
         await callback.answer("Esta sección es para administradores del grupo.", show_alert=True)
@@ -270,6 +274,13 @@ async def menu_callback(callback: CallbackQuery):
     language = (await get_settings(callback.message.chat.id)).get("language", "es")
     home = HOME_EN if language == "en" else HOME
     sections = EN_SECTIONS if language == "en" else SECTIONS
-    text = home if section == "home" else sections.get(section, home)
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=menu_keyboard(section, language, role))
+    text = home if section == "home" else sections[section]
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=menu_keyboard(section, language, role))
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            await callback.answer("Ya estás viendo esta sección.")
+        else:
+            await callback.answer("No pude abrir esta sección. Vuelve a /start e inténtalo otra vez.", show_alert=True)
+        return
     await callback.answer()

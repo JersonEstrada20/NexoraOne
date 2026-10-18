@@ -227,8 +227,6 @@ def _build_buy_keyboard(settings: dict) -> InlineKeyboardMarkup:
 
     for i in range(0, len(buttons), 2):
         rows.append(buttons[i:i + 2])
-    if buttons:
-        rows.append([InlineKeyboardButton("🔄 Actualizar opciones", callback_data="buy:all")])
     extra_buttons = []
     group_link = settings.get("GRUPO_LINK") or cfg.get("GRUPO_LINK") or DEFAULT_GROUP_LINK
     channel_link = settings.get("CANAL_LINK") or cfg.get("CANAL_LINK") or DEFAULT_CHANNEL_LINK

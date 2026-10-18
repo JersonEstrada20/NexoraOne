@@ -9,17 +9,10 @@ from app.config import DEFAULT_RULES_TEXT
 from app.services.admin_logs import send_admin_log
 from app.services.database import add_log, add_report, add_ticket, get_settings, get_group_stats, accept_rules, get_activity_total
 from app.services.filters import is_admin
-from app.handlers.menu import HOME, menu_keyboard, menu_role
 from app.services.templates import render_group_template
 from app.services.message_ui import field, heading, notice, section
 
 router = Router()
-
-
-@router.message(Command("start"))
-async def cmd_start(message: Message):
-    role = await menu_role(message.bot, message.chat.id, message.from_user.id)
-    await message.reply(HOME, parse_mode="HTML", reply_markup=menu_keyboard(role=role))
 
 
 @router.message(Command("ping"))

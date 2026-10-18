@@ -2230,21 +2230,21 @@ PANEL_SECTION_ACCESS = {
     "sistema": {"FUNDADOR"},
 }
 PANEL_NAV_ITEMS = [
-    ("resumen", "Resumen"),
-    ("buscar", "Buscar"),
-    ("categorias", "Categorías"),
-    ("comandos", "Comandos"),
+    ("resumen", "Resumen general"),
+    ("buscar", "Búsqueda global"),
+    ("categorias", "Categorías del catálogo"),
+    ("comandos", "Servicios y comandos"),
     ("buy", "Paquetes /buy"),
     ("usuarios", "Usuarios"),
     ("compras", "Compras"),
-    ("historial", "Historial"),
+    ("historial", "Historial de consultas"),
     ("vendedores", "Vendedores"),
-    ("ajustes", "Ajustes Visuales"),
-    ("solicitudes", "Solicitudes"),
-    ("keys", "Keys"),
-    ("herramientas", "Herramientas"),
-    ("sistema", "Sistema"),
-    ("estadisticas", "Estadísticas"),
+    ("ajustes", "Botones y apariencia"),
+    ("solicitudes", "Tickets y solicitudes"),
+    ("keys", "Claves y canjes"),
+    ("herramientas", "Mantenimiento"),
+    ("sistema", "Salud y respaldos"),
+    ("estadisticas", "Estadísticas y ventas"),
 ]
 
 

@@ -292,18 +292,18 @@ def panel_keyboard(settings: dict, section: str = "home"):
         builder.button(text="🚨 Sanciones", callback_data="panel:sanctions")
         builder.button(text="👥 Gestión", callback_data="panel:management")
         builder.button(text="🧰 Bloqueos y permisos", callback_data="panel:tools")
-        builder.button(text="🔄 Actualizar", callback_data="panel:home")
+        builder.button(text="🔄 Recargar estado", callback_data="panel:home")
         builder.button(text="📚 Menú general", callback_data="mainmenu:home")
         builder.button(text="❌ Cerrar", callback_data="panel:close")
-        builder.adjust(2, 2, 2, 1)
+        builder.adjust(2)
     elif section == "security":
         builder.button(text=f"🔗 Anti-link: {'ON' if settings['anti_link'] else 'OFF'}", callback_data="panel:toggle_antilink")
         builder.button(text=f"⚡ Antiflood: {'ON' if settings['antiflood'] else 'OFF'}", callback_data="panel:toggle_antiflood")
         builder.button(text=f"🛡 Captcha: {'ON' if settings['captcha_enabled'] else 'OFF'}", callback_data="panel:toggle_captcha")
         builder.button(text=f"👤 Aprobación manual: {'ON' if settings.get('approval_enabled') else 'OFF'}", callback_data="panel:toggle_approval")
-        builder.button(text="🏠 Inicio", callback_data="panel:home")
-        builder.button(text="📚 Menú", callback_data="mainmenu:home")
-        builder.adjust(1)
+        builder.button(text="↩️ Volver al panel", callback_data="panel:home")
+        builder.button(text="🏠 Menú principal", callback_data="mainmenu:home")
+        builder.adjust(2)
     elif section == "content":
         builder.button(text="👁 Ver bienvenida", callback_data="panel:preview_welcome")
         builder.button(text="✏️ Cambiar bienvenida", callback_data="panel:how_welcome")
@@ -314,35 +314,35 @@ def panel_keyboard(settings: dict, section: str = "home"):
         builder.button(text="🖼 Foto/GIF", callback_data="panel:how_media")
         builder.button(text="🗑 Quitar multimedia", callback_data="panel:del_media")
         builder.button(text="📊 Crear encuesta", callback_data="panel:how_poll")
-        builder.button(text="🏠 Inicio", callback_data="panel:home")
-        builder.button(text="📚 Menú", callback_data="mainmenu:home")
-        builder.adjust(2, 2, 2, 2, 2)
+        builder.button(text="↩️ Volver al panel", callback_data="panel:home")
+        builder.button(text="🏠 Menú principal", callback_data="mainmenu:home")
+        builder.adjust(2)
     elif section == "sanctions":
         builder.button(text=f"📈 Progresivas: {'ON' if settings['progressive_sanctions'] else 'OFF'}", callback_data="panel:toggle_progressive")
         builder.button(text="⚠️ Warns", callback_data="panel:how_warns")
         builder.button(text="🔇 Mutes", callback_data="panel:how_mutes")
         builder.button(text="📋 Logs", callback_data="panel:open_logs")
         builder.button(text="📡 Canal de logs", callback_data="panel:how_logchannel")
-        builder.button(text="🏠 Inicio", callback_data="panel:home")
-        builder.button(text="📚 Menú", callback_data="mainmenu:home")
-        builder.adjust(1, 2, 2, 2)
+        builder.button(text="↩️ Volver al panel", callback_data="panel:home")
+        builder.button(text="🏠 Menú principal", callback_data="mainmenu:home")
+        builder.adjust(2)
     elif section == "management":
         builder.button(text="👥 Staff", callback_data="center:staff")
         builder.button(text="🚩 Reportes", callback_data="center:reports")
         builder.button(text="🎫 Tickets", callback_data="center:tickets")
         builder.button(text="🎛 Centro completo", callback_data="center:home")
         builder.button(text="📦 Exportar configuración", callback_data="panel:export_config")
-        builder.button(text="🏠 Inicio", callback_data="panel:home")
-        builder.button(text="📚 Menú", callback_data="mainmenu:home")
-        builder.adjust(2, 2, 2)
+        builder.button(text="↩️ Volver al panel", callback_data="panel:home")
+        builder.button(text="🏠 Menú principal", callback_data="mainmenu:home")
+        builder.adjust(2)
     elif section == "tools":
         for kind, label in (("fotos", "📷 Fotos"), ("videos", "🎬 Videos"), ("gifs", "🎞 GIF"),
                             ("stickers", "😀 Stickers"), ("audios", "🎵 Audios"),
                             ("documentos", "📄 Documentos"), ("encuestas", "📊 Encuestas")):
             builder.button(text=label, callback_data=f"panel:lock_{kind}")
         builder.button(text="🔗 Ver listas blancas", callback_data="panel:whitelists")
-        builder.button(text="🏠 Inicio", callback_data="panel:home")
-        builder.adjust(2, 2, 2, 1, 1, 1)
+        builder.button(text="↩️ Volver al panel", callback_data="panel:home")
+        builder.adjust(2)
     return builder.as_markup()
 
 
@@ -374,8 +374,8 @@ def control_center_keyboard():
 
 def center_back_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="⬅️ Volver", callback_data="center:home")
-    builder.button(text="🎛 Panel", callback_data="panel:home")
+    builder.button(text="↩️ Centro administrativo", callback_data="center:home")
+    builder.button(text="🎛 Panel del grupo", callback_data="panel:home")
     builder.adjust(2)
     return builder.as_markup()
 

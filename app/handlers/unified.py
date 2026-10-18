@@ -9,6 +9,11 @@ from nexora.runtime import runtime, COMMANDS, CALLBACKS
 from nexora.comandos.utils import API_BASE, fetch_api_json_async
 
 router = Router()
+UNIFIED_ACTIONS = {
+    "account", "activity", "admin", "buy", "card", "catalog", "custom",
+    "downloads", "economy", "history", "historymenu", "paneladmin", "profile",
+    "register", "web",
+}
 
 def choices(items, user_id=None):
     builder = InlineKeyboardBuilder()
@@ -40,12 +45,25 @@ async def service_catalog(message):
 
 @router.message(Command("perfil"))
 async def profile(message):
+    options = [
+        ("💳 Cuenta y créditos", "account"),
+        ("💵 Soles y juegos", "economy"),
+        ("🎴 Mi tarjeta", "card"),
+    ]
+    text = (
+        "👤 <b>Tu espacio personal</b>\n\n"
+        "Elige qué quieres revisar. Los créditos de servicios y los soles de juegos son saldos distintos.\n"
+        "Para consultar los créditos de otra persona, responde a su mensaje con <code>/me</code> o usa <code>/me ID</code>."
+    )
+    if message.chat.type in {"group", "supergroup"}:
+        options.insert(2, ("📈 Mi actividad en este grupo", "activity"))
+    else:
+        options.insert(2, ("📈 Actividad · solo en grupos", "activity"))
+        text += "\n\n📈 La actividad solo está disponible cuando abres /perfil dentro de un grupo."
     await message.answer(
-        "👤 <b>Mi cuenta</b>\n\nElige qué quieres revisar. Para consultar los créditos de otra persona, responde a su mensaje con <code>/me</code> o usa <code>/me ID</code>.",
+        text,
         parse_mode="HTML",
-        reply_markup=choices([
-        ("💳 Cuenta y créditos", "account"), ("💵 Soles y juegos", "economy"),
-        ("📈 Actividad del grupo", "activity"), ("🎴 Mi tarjeta", "card")], message.from_user.id))
+        reply_markup=choices(options, message.from_user.id))
 
 @router.message(Command("historial"))
 async def history(message):
@@ -78,22 +96,41 @@ async def panel(message):
 
 @router.callback_query(F.data.startswith("unified:"))
 async def selected(callback):
-    _, owner, action = callback.data.split(":", 2)
-    if int(owner) not in (0, callback.from_user.id):
+    parts = (callback.data or "").split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Este botón está incompleto. Abre /start para cargar el menú actualizado.", show_alert=True)
+        return
+    _, owner, action = parts
+    try:
+        owner_id = int(owner)
+    except ValueError:
+        await callback.answer("No pude identificar esta opción. Abre /start para cargar el menú actualizado.", show_alert=True)
+        return
+    if action not in UNIFIED_ACTIONS:
+        await callback.answer("Este botón ya no está disponible. Abre /start para ver las opciones actuales.", show_alert=True)
+        return
+    if owner_id not in (0, callback.from_user.id):
         await callback.answer("Abre tu propio /perfil o /historial.", show_alert=True)
         return
     await callback.answer()
     message = callback.message.model_copy(update={"from_user": callback.from_user, "reply_to_message": None}).as_(callback.bot)
-    local = {"economy": features.profile, "activity": automation.level,
+    local = {"economy": features.profile,
              "card": features.profile_card, "downloads": media.download_history,
              "register": register, "profile": profile, "historymenu": history}
     if action in local:
         await local[action](message)
+    elif action == "activity":
+        if message.chat.type in {"group", "supergroup"}:
+            await automation.level(message)
+        else:
+            await message.answer("📈 Para consultar tu actividad, abre /perfil dentro del grupo que quieres revisar.")
     elif action == "paneladmin":
         await panel(message)
     elif action == "custom":
         if await menu_role(callback.bot, message.chat.id, callback.from_user.id) != "user":
             await group_tools.commands(message)
+        else:
+            await message.answer("Esta herramienta solo está disponible para administradores del grupo.")
     elif action in {"account", "history", "catalog", "buy", "admin", "web"}:
         await runtime.invoke(callback, action)
 

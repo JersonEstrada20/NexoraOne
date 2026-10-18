@@ -352,16 +352,18 @@ def _kb_home(categories: list[dict]):
             row = []
     if row:
         buttons.append(row)
-    return InlineKeyboardMarkup(buttons or [[InlineKeyboardButton("Sin categorías", callback_data="cmds_nav_home")]])
+    return InlineKeyboardMarkup(buttons) if buttons else None
 
 
 def _kb_category_nav(category_slug: str, page: int, total_pages: int):
+    if total_pages <= 1:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("📂 Volver a categorías", callback_data="cmds_nav_home")]])
     prev_page = total_pages if page <= 1 else page - 1
     next_page = 1 if page >= total_pages else page + 1
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⬅️", callback_data=f"cmds_cat_{category_slug}_{prev_page}"),
-            InlineKeyboardButton("🏠", callback_data="cmds_nav_home"),
+            InlineKeyboardButton("📂 Categorías", callback_data="cmds_nav_home"),
             InlineKeyboardButton("➡️", callback_data=f"cmds_cat_{category_slug}_{next_page}"),
         ]
     ])
@@ -369,12 +371,14 @@ def _kb_category_nav(category_slug: str, page: int, total_pages: int):
 
 def _kb_search_nav(query: str, page: int, total_pages: int):
     safe_query = query[:48].replace(":", " ").strip()
+    if total_pages <= 1:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("📂 Volver al catálogo", callback_data="cmds_nav_home")]])
     prev_page = total_pages if page <= 1 else page - 1
     next_page = 1 if page >= total_pages else page + 1
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⬅️", callback_data=f"cmds_search_{prev_page}_{safe_query}"),
-            InlineKeyboardButton("🏠", callback_data="cmds_nav_home"),
+            InlineKeyboardButton("📂 Catálogo", callback_data="cmds_nav_home"),
             InlineKeyboardButton("➡️", callback_data=f"cmds_search_{next_page}_{safe_query}"),
         ]
     ])
@@ -387,10 +391,16 @@ def _command_plan_label(cmd: dict) -> str:
     return str(cmd.get("required_plan_label") or PLAN_LABELS.get(raw, "Libre"))
 
 
-def _home_caption(cfg: dict, user) -> str:
+def _home_caption(cfg: dict, user, categories: list[dict] | None = None) -> str:
     bot_name = _bot_brand(cfg)
     nombre = html.escape(user.first_name or "Usuario")
     link = _user_link(user)
+    if categories is not None and not categories:
+        return (
+            f"✨ <b>{bot_name} · CATÁLOGO DE SERVICIOS</b>\n\n"
+            f"👋 Hola, <a href=\"{link}\">{nombre}</a>\n\n"
+            "📭 Todavía no hay categorías con servicios activos. Escríbenos para pedir que agreguemos opciones."
+        )
     return (
         f"✨ <b>{bot_name} · CATÁLOGO DE SERVICIOS</b>\n\n"
         f"👋 Hola, <a href=\"{link}\">{nombre}</a>\n\n"
@@ -513,7 +523,7 @@ async def cmds_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     categories = _get_categories()
     await _send_or_edit_menu(
         update.effective_message,
-        _home_caption(cfg, update.effective_user),
+        _home_caption(cfg, update.effective_user, categories),
         _kb_home(categories),
         _get_menu_image(cfg),
         edit=False,
@@ -529,7 +539,7 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cmds_nav_home":
         await _send_or_edit_menu(
             query,
-            _home_caption(cfg, update.effective_user),
+            _home_caption(cfg, update.effective_user, categories),
             _kb_home(categories),
             _get_menu_image(cfg),
             edit=True,
@@ -594,4 +604,4 @@ async def cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    await query.answer()
+    await query.answer("Esta opción del catálogo ya no está disponible. Abre /cmds para ver los botones actuales.", show_alert=True)
