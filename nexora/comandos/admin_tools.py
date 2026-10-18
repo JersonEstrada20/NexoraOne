@@ -7,7 +7,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from nexora.comandos.bot_errors import api_error_text
-from nexora.comandos.utils import configured_admin_ids, fetch_api_json, fetch_api_json_async
+from nexora.comandos.utils import configured_admin_ids, fetch_api_json_async
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "config.json")
@@ -25,10 +25,6 @@ ADMIN_IDS = configured_admin_ids()
 
 def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
-
-def _api(path: str, timeout: int = 18, method: str = "GET", payload: dict | None = None):
-    return fetch_api_json(path, timeout=timeout, method=method, payload=payload)
 
 
 async def _api_async(path: str, timeout: int = 18, method: str = "GET", payload: dict | None = None):
@@ -102,12 +98,12 @@ async def _ban_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, actio
     target = str(context.args[0])
     keyboard = InlineKeyboardMarkup(
         [[
-            InlineKeyboardButton("Confirmar", callback_data=f"admintool:{action}:{target}"),
-            InlineKeyboardButton("Cancelar", callback_data=f"admintool:cancel:{target}"),
+            InlineKeyboardButton("✅ Confirmar", callback_data=f"admintool:{action}:{target}"),
+            InlineKeyboardButton("↩️ Cancelar", callback_data=f"admintool:cancel:{target}"),
         ]]
     )
     await msg.reply_text(
-        f"Confirmar acción <code>{action}</code> para usuario <code>{target}</code>.",
+        f"⚠️ <b>Confirmar acción</b>\n\nAcción: <code>{action}</code>\nUsuario: <code>{target}</code>",
         parse_mode="HTML",
         reply_markup=keyboard,
         reply_to_message_id=msg.message_id,
@@ -123,8 +119,8 @@ async def admin_tools_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     _, action, target = (query.data or "").split(":", 2)
     if action == "cancel":
-        await query.answer("Cancelado.")
-        await query.edit_message_text("Acción cancelada.")
+        await query.answer("Acción cancelada.")
+        await query.edit_message_text("↩️ Acción cancelada.")
         return
     actor = str(query.from_user.id)
     if action == "registerban":
@@ -134,7 +130,7 @@ async def admin_tools_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             payload={"ID_TG": target, "actor": actor},
         )
         if st == 200 and (data or {}).get("status") == "ok":
-            await query.answer("Registrado y baneado.")
+            await query.answer("✅ Registrado y baneado.")
             await _edit_tool_message(
                 query,
                 f"Usuario <code>{html.escape(target)}</code> registrado y baneado.",
@@ -151,14 +147,14 @@ async def admin_tools_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         payload={"ID_TG": target, "action": action, "actor": actor},
     )
     if st == 200 and (data or {}).get("status") == "ok":
-        await query.answer("Actualizado.")
+        await query.answer("✅ Actualizado.")
         await _edit_tool_message(query, f"Usuario {target} actualizado: {(data or {}).get('estado')}.")
     elif st == 404 and "usuario" in str((data or {}).get("message", "")).lower():
         await query.answer("Usuario no registrado.", show_alert=True)
         keyboard = InlineKeyboardMarkup(
             [[
-                InlineKeyboardButton("Registrar y banear", callback_data=f"admintool:registerban:{target}"),
-                InlineKeyboardButton("Cancelar", callback_data=f"admintool:cancel:{target}"),
+                InlineKeyboardButton("⛔ Registrar y banear", callback_data=f"admintool:registerban:{target}"),
+                InlineKeyboardButton("↩️ Cancelar", callback_data=f"admintool:cancel:{target}"),
             ]]
         )
         await _edit_tool_message(
@@ -169,7 +165,7 @@ async def admin_tools_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=keyboard,
         )
     else:
-        await query.answer("Error.", show_alert=True)
+        await query.answer("❌ No se pudo completar.", show_alert=True)
         await _edit_tool_message(query, _err(st, data), parse_mode="HTML")
 
 
@@ -225,21 +221,37 @@ async def ventas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def errores_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or not _need_admin(update):
-        await msg.reply_text("No tienes permisos para usar /errores.")
+        if msg:
+            await msg.reply_text("No tienes permisos para usar /errores.")
         return
-    st, data = await _api_async("/internal/admin/errors?limit=10")
+    reference = (context.args[0] if context.args else "").strip().upper()
+    if reference and (len(reference) != 8 or any(char not in "0123456789ABCDEF" for char in reference)):
+        await msg.reply_text("Formato: <code>/errores ABCD1234</code> · usa los 8 caracteres de la referencia.", parse_mode="HTML")
+        return
+    path = "/internal/admin/errors?limit=10"
+    if reference:
+        path += "&reference=" + _urlparse.quote(reference)
+    st, data = await _api_async(path)
     if st != 200 or (data or {}).get("status") != "ok":
         await msg.reply_text(_err(st, data), parse_mode="HTML", reply_to_message_id=msg.message_id)
         return
     metrics = data.get("metrics") or {}
-    lines = [
-        "<b>NEXORA ONE ⇒ ERRORES</b>",
-        f"15m: <code>{metrics.get('ultimos_15m', 0)}</code> · 24h: <code>{metrics.get('ultimos_24h', 0)}</code>",
-        "",
-    ]
+    lines = ["<b>NEXORA ONE ⇒ ERRORES</b>"]
+    if reference:
+        lines.extend([f"Referencia: <code>{reference}</code>", ""])
+    else:
+        lines.extend([
+            f"15m: <code>{metrics.get('ultimos_15m', 0)}</code> · 24h: <code>{metrics.get('ultimos_24h', 0)}</code>",
+            "Busca un fallo con <code>/errores ABCD1234</code>.",
+            "",
+        ])
     for row in data.get("data") or []:
-        lines.append(f"#{row.get('id')} <code>{html.escape(row.get('method') or '')} {html.escape(row.get('path') or '')}</code>")
-        lines.append(f"{html.escape(str(row.get('message') or '')[:160])}")
-    if len(lines) == 3:
-        lines.append("Sin errores registrados.")
+        if row.get("reference"):
+            lines.append(f"Ref. <code>{html.escape(str(row['reference']))}</code>")
+        lines.append(f"#{row.get('id')} <code>{html.escape(str(row.get('source') or 'web'))} · {html.escape(str(row.get('method') or ''))} {html.escape(str(row.get('path') or ''))}</code>")
+        lines.append(html.escape(str(row.get("message") or "")[:160]))
+        if reference:
+            lines.append("Revisa el estado en el panel antes de repetir la operación.")
+    if not data.get("data"):
+        lines.append("No encontré un error guardado con esa referencia." if reference else "Sin errores registrados.")
     await msg.reply_text("\n".join(lines), parse_mode="HTML", reply_to_message_id=msg.message_id)

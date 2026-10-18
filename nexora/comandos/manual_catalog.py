@@ -10,8 +10,8 @@ from nexora.comandos.admin_requests import create_request
 from nexora.comandos.utils import (
     account_access_message,
     configured_admin_ids,
-    get_command_runtime_config,
-    verificar_usuario,
+    get_command_runtime_config_async,
+    verificar_usuario_async,
 )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -271,7 +271,7 @@ async def manual_catalog_command(update: Update, context: ContextTypes.DEFAULT_T
     if not command_slug:
         return
 
-    command_cfg = get_command_runtime_config(command_slug, 1)
+    command_cfg = await get_command_runtime_config_async(command_slug, 1)
     if not command_cfg.get("exists", False) or command_cfg.get("slug") != command_slug:
         await msg.reply_text("⚠️ Ese comando no está registrado en el catálogo.")
         return
@@ -304,7 +304,7 @@ async def manual_catalog_command(update: Update, context: ContextTypes.DEFAULT_T
         await msg.reply_text(validation_error, reply_to_message_id=msg.message_id)
         return
 
-    valido, info_usuario = verificar_usuario(str(user.id))
+    valido, info_usuario = await verificar_usuario_async(str(user.id))
     if not valido:
         await msg.reply_text(account_access_message(info_usuario))
         return

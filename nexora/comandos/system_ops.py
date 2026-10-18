@@ -49,7 +49,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     storage = data.get("storage") or {}
     items = storage.get("items") or []
+    runtime = data.get("runtime") or {}
+    components = data.get("components") or {}
     metrics = data.get("metrics") or {}
+    sources = metrics.get("sources") or {}
     usuarios = metrics.get("usuarios") or {}
     keys = metrics.get("keys") or {}
     solicitudes = metrics.get("solicitudes") or {}
@@ -60,13 +63,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "panel": "OK" if PANEL_URL else "FALTA",
         "key": "OK" if INTERNAL_API_KEY else "FALTA",
     }
-    worker_online = bool(data.get("worker_online", True))
+    worker_online = bool(runtime.get("worker_online", data.get("worker_online", True)))
+    data_status = components.get("data", "unknown")
     lines = [
         heading("🧭", "Estado de NEXORA ONE"),
         "",
         section("🌐", "Servicios"),
         field("✅" if st == 200 else "⚠️", "Web", f"{st} · {data.get('status', 'error')}", code=True),
         field("🤖" if worker_online else "⚠️", "Worker", "En línea" if worker_online else "Sin heartbeat"),
+        field("✅" if data_status == "available" else "⚠️", "Base de datos", data_status),
         field("🔗", "API interna", API_BASE or "Sin configurar", code=True),
         f"🖥️ <b>Panel:</b> <a href=\"{escape(PANEL_URL, quote=True)}\">Abrir panel</a>" if PANEL_URL else "🖥️ <b>Panel:</b> Sin configurar",
         "",
@@ -80,12 +85,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.extend([
         "",
         section("📊", "Actividad"),
-        field("👥", "Usuarios", f"{usuarios.get('total', 0)} total · {usuarios.get('activos', 0)} activos · {usuarios.get('baneados', 0)} baneados"),
-        field("🔑", "Keys", f"{keys.get('total', 0)} total · {keys.get('disponibles', 0)} disponibles · {keys.get('canjes', 0)} canjes"),
-        field("📨", "Solicitudes", f"{solicitudes.get('pending', 0)} pendientes · {solicitudes.get('resolved', 0)} resueltas · {solicitudes.get('failed', 0)} fallidas"),
-        field("🛍️", "Catálogo", f"{catalogo.get('commands', 0)} comandos · {catalogo.get('active_commands', 0)} activos · {catalogo.get('categories', 0)} categorías · {catalogo.get('buy_packages', 0)} paquetes /buy"),
-        field("🧯", "Errores", f"{errores.get('ultimos_15m', 0)} en 15 min · {errores.get('ultimos_24h', 0)} en 24 h"),
+        field("👥", "Usuarios", "No disponible" if sources.get("usuarios_catalogo") == "error" else f"{usuarios.get('total', 0)} total · {usuarios.get('activos', 0)} activos · {usuarios.get('baneados', 0)} baneados"),
+        field("🔑", "Keys", "No disponible" if sources.get("keys") == "error" else f"{keys.get('total', 0)} total · {keys.get('disponibles', 0)} disponibles · {keys.get('canjes', 0)} canjes"),
+        field("📨", "Solicitudes", "No disponible" if sources.get("solicitudes_errores") == "error" else f"{solicitudes.get('pending', 0)} pendientes · {solicitudes.get('resolved', 0)} resueltas · {solicitudes.get('failed', 0)} fallidas"),
+        field("🛍️", "Catálogo", "No disponible" if sources.get("usuarios_catalogo") == "error" else f"{catalogo.get('commands', 0)} comandos · {catalogo.get('active_commands', 0)} activos · {catalogo.get('categories', 0)} categorías · {catalogo.get('buy_packages', 0)} paquetes /buy"),
+        field("🧯", "Errores", "No disponible" if sources.get("solicitudes_errores") == "error" else f"{errores.get('ultimos_15m', 0)} en 15 min · {errores.get('ultimos_24h', 0)} en 24 h"),
     ])
+    if metrics.get("errors"):
+        lines.append(field("⚠️", "Fuentes con problemas", ", ".join(metrics["errors"])))
     await msg.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True, reply_to_message_id=msg.message_id)
 
 

@@ -1,0 +1,121 @@
+      {% if active_section == 'usuario' %}
+      <div class="stack">
+        <div class="card">
+          <div class="toolbar">
+            <div>
+              <h2>Perfil de usuario</h2>
+              <p class="small">Vista completa de datos, compras, historial y solicitudes.</p>
+            </div>
+            <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-minw-360">
+              <input type="hidden" name="section" value="usuario">
+              <input name="uid" value="{{ profile_user_id }}" placeholder="ID usuario">
+              <button type="submit">Abrir</button>
+            </form>
+          </div>
+          {% if user_profile.user %}
+          <div class="compact-profile">
+            <div class="summary">
+              <div class="metric"><span class="pill">ID</span><h3>{{ user_profile.user.id_tg }}</h3><div class="small">Telegram</div></div>
+              <div class="metric"><span class="pill">Rol</span><h3>{{ user_profile.user.rol_tg or 'FREE' }}</h3><div class="small">{{ user_profile.user.estado or '—' }}</div></div>
+              <div class="metric"><span class="pill">Plan</span><h3>{{ user_profile.user.plan or 'FREE' }}</h3><div class="small">{{ user_profile.user.fecha_caducidad or 'Sin vencimiento' }}</div></div>
+              <div class="metric"><span class="pill">Créditos</span><h3>{{ user_profile.user.creditos or 0 }}</h3><div class="small">Antispam {{ user_profile.user.antispam or 0 }}s</div></div>
+            </div>
+            <div class="profile-facts">
+              <div class="profile-fact"><strong>Web</strong>{{ user_profile.user.user_web or '—' }}<div class="small">{{ user_profile.user.register_web or 'Sin registro' }}</div></div>
+              <div class="profile-fact"><strong>WSP</strong>{{ user_profile.user.number_wsp or '—' }}<div class="small">{{ user_profile.user.register_wsp or 'Sin registro' }}</div></div>
+              <div class="profile-fact"><strong>Compras</strong>{{ user_profile.purchases|length }}</div>
+              <div class="profile-fact"><strong>Consultas</strong>{{ user_profile.history|length }}</div>
+              <div class="profile-fact"><strong>Keys</strong>{{ user_profile['keys']|length }}</div>
+              <div class="profile-fact"><strong>Solicitudes</strong>{{ user_profile.requests|length }}</div>
+            </div>
+          </div>
+          <form method="post" action="{{ url_for('admin_user_message') }}" class="inline u-mt-14">
+            <input type="hidden" name="id_tg" value="{{ user_profile.user.id_tg }}">
+            <input name="message" placeholder="Mensaje directo al usuario" required>
+            <button type="submit">Enviar DM</button>
+          </form>
+          {% else %}
+          <p>No se encontró usuario. Escribe un ID y abre el perfil.</p>
+          {% endif %}
+        </div>
+        {% if user_profile.user %}
+        <div class="section-grid">
+          <details class="card panel-details" open>
+            <summary>Compras <a href="{{ url_for('admin_panel', section='compras', purchase_user=profile_user_id) }}">Ver todas</a></summary>
+            <table>
+              <thead><tr><th>ID</th><th>Compra</th><th>Vendedor</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in user_profile.purchases %}
+                <tr><td>#{{ row.ID }}</td><td>{{ row.COMPRO or '—' }}<div class="small">{{ row.ESTADO or 'ENTREGADA' }}</div></td><td>{{ row.VENDEDOR or '—' }}</td><td>{{ row.FECHA or '—' }}</td></tr>
+                {% endfor %}
+                {% if not user_profile.purchases %}<tr><td colspan="4">Sin compras.</td></tr>{% endif %}
+              </tbody>
+            </table>
+          </details>
+          <details class="card panel-details">
+            <summary>Historial <a href="{{ url_for('admin_panel', section='historial', history_user=profile_user_id) }}">Ver todo</a></summary>
+            <table>
+              <thead><tr><th>ID</th><th>Comando</th><th>Valor</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% for row in user_profile.history %}
+                <tr><td>#{{ row.ID }}</td><td>/{{ row.consulta }}</td><td>{{ row.valor or '—' }}</td><td>{{ row.fecha or '—' }}</td></tr>
+                {% endfor %}
+                {% if not user_profile.history %}<tr><td colspan="4">Sin historial.</td></tr>{% endif %}
+              </tbody>
+            </table>
+          </details>
+        </div>
+        <details class="card panel-details" open>
+          <summary>Actividad reciente</summary>
+          <table>
+            <thead><tr><th>Tipo</th><th>Detalle</th><th>Info</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for item in user_profile.activity %}
+              <tr><td>{{ item.type }}</td><td><strong>{{ item.label }}</strong></td><td>{{ item.detail }}</td><td>{{ item.date or '—' }}</td></tr>
+              {% endfor %}
+              {% if not user_profile.activity %}<tr><td colspan="4">Sin actividad.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        <details class="card panel-details">
+          <summary>Keys canjeadas</summary>
+          <table>
+            <thead><tr><th>ID</th><th>Key</th><th>Tipo</th><th>Cantidad</th><th>Fecha</th></tr></thead>
+            <tbody>
+              {% for key in user_profile['keys'] %}
+              <tr><td>#{{ key.id }}</td><td><strong>{{ key.key }}</strong></td><td>{{ key.tipo or '—' }}</td><td>{{ key.cantidad or 0 }}</td><td>{{ key.fecha_canje or '—' }}</td></tr>
+              {% endfor %}
+              {% if not user_profile['keys'] %}<tr><td colspan="5">Sin keys canjeadas.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        <details class="card panel-details">
+          <summary>Solicitudes</summary>
+          <table>
+            <thead><tr><th>ID</th><th>Comando</th><th>Estado</th><th>Costo</th><th>Pedido</th><th>Cierre</th></tr></thead>
+            <tbody>
+              {% for req in user_profile.requests %}
+              <tr>
+                <td>#{{ req.id }}</td>
+                <td>/{{ req.command }}</td>
+                <td><span class="badge {% if req.status == 'resolved' %}ok{% else %}off{% endif %}">{{ req.status }}</span></td>
+                <td>{{ req.cost }}</td>
+                <td>{{ req.payload or '—' }}</td>
+                <td>{{ req.resolved_at or '—' }}
+                  {% if req.message_history %}
+                  <details class="small"><summary>Historial ({{ req.message_history|length }})</summary>
+                    {% for item in req.message_history %}
+                    <div class="u-prewrap u-mt-8"><strong>{{ item.author_label }} · {{ item.kind }}</strong><br>{{ item.at }}<br>{{ item.text }}</div>
+                    {% endfor %}
+                  </details>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not user_profile.requests %}<tr><td colspan="6">Sin solicitudes.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}

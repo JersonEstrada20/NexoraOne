@@ -1,4 +1,5 @@
 import html
+import asyncio
 import json
 import os
 import re
@@ -11,7 +12,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.error import NetworkError
 from nexora.storage import db_path
-from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json
+from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json, fetch_api_json_async
 from nexora.request_history import append_request_event, latest_request_message
 
 DB_FILE = db_path("requests.db")
@@ -52,11 +53,11 @@ def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
-def _log_historial(user_id: int, command: str, payload: str):
+async def _log_historial_async(user_id: int, command: str, payload: str):
     if not API_BASE:
         return
     try:
-        fetch_api_json(
+        await fetch_api_json_async(
             HISTORIAL_ENDPOINT,
             method="POST",
             payload={
@@ -150,6 +151,14 @@ def _sync_request_by_id(request_id: int):
             _sync_request_payload(_request_row_to_payload(row))
     except Exception:
         pass
+
+
+async def _sync_request_by_id_async(request_id: int):
+    await asyncio.to_thread(_sync_request_by_id, request_id)
+
+
+async def _sync_request_payload_async(payload: dict):
+    await asyncio.to_thread(_sync_request_payload, payload)
 
 
 def sync_recent_requests_to_api(limit: int = 300):
@@ -331,7 +340,7 @@ async def _send_delivery_message(context: ContextTypes.DEFAULT_TYPE, row, text: 
     try:
         sent = await context.bot.send_message(**kwargs)
     except NetworkError as exc:
-        _mark_delivery_uncertain(row, text, author_id=author_id, charged=charged)
+        await _mark_delivery_uncertain(row, text, author_id=author_id, charged=charged)
         raise RequestDeliveryUncertain(
             f"Telegram no confirmó la entrega de la solicitud #{row[0]}. Revisa el chat del usuario; luego confirma la entrega o autoriza un reintento desde el panel."
         ) from exc
@@ -342,7 +351,7 @@ class RequestDeliveryUncertain(RuntimeError):
     pass
 
 
-def _mark_delivery_uncertain(row, text: str, author_id=None, charged=None):
+async def _mark_delivery_uncertain(row, text: str, author_id=None, charged=None):
     request_id = int(row[0])
     conn = db_connect(DB_FILE)
     try:
@@ -370,7 +379,7 @@ def _mark_delivery_uncertain(row, text: str, author_id=None, charged=None):
         conn.commit()
     finally:
         conn.close()
-    _sync_request_by_id(request_id)
+    await _sync_request_by_id_async(request_id)
 
 
 async def _delete_message_silent(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
@@ -653,12 +662,12 @@ class RequestChargeError(RuntimeError):
     pass
 
 
-def _maybe_charge_request(cursor, request_id: int, user_id: int, cost: int, already_charged: int) -> int:
+async def _maybe_charge_request(cursor, request_id: int, user_id: int, cost: int, already_charged: int) -> int:
     if already_charged:
         return 1
-    from nexora.comandos.utils import descontar_creditos, verificar_usuario
+    from nexora.comandos.utils import descontar_creditos_async, verificar_usuario_async
 
-    valido, info = verificar_usuario(str(user_id))
+    valido, info = await verificar_usuario_async(str(user_id))
     if not valido:
         state = (info or {}).get("_account_state")
         if state == "missing":
@@ -667,7 +676,7 @@ def _maybe_charge_request(cursor, request_id: int, user_id: int, cost: int, alre
             raise RequestChargeError("No se envió la respuesta: la cuenta del usuario está inactiva.")
         raise RequestChargeError("No se pudo comprobar la cuenta. No se envió la respuesta ni se confirmó un cobro.")
     if not info.get("ilimitado", False):
-        ok, result = descontar_creditos(
+        ok, result = await descontar_creditos_async(
             str(user_id), cost, operation_id=f"request:{request_id}:billable-response"
         )
         if not ok:
@@ -684,23 +693,23 @@ def _build_request_keyboard(request_id: int, status: str = "pending"):
     if status == "pending":
         rows = [
             [
-                InlineKeyboardButton("Responder", callback_data=f"adminreq:reply:{request_id}"),
-                InlineKeyboardButton("Resp. s/cobro", callback_data=f"adminreq:replyfree:{request_id}"),
+                InlineKeyboardButton("💬 Responder", callback_data=f"adminreq:reply:{request_id}"),
+                InlineKeyboardButton("🆓 Sin cobro", callback_data=f"adminreq:replyfree:{request_id}"),
             ],
             [
-                InlineKeyboardButton("Plantillas", callback_data=f"adminreq:templates:{request_id}"),
-                InlineKeyboardButton("Finalizar", callback_data=f"adminreq:done:{request_id}"),
+                InlineKeyboardButton("📝 Plantillas", callback_data=f"adminreq:templates:{request_id}"),
+                InlineKeyboardButton("✅ Finalizar", callback_data=f"adminreq:done:{request_id}"),
             ],
             [
-                InlineKeyboardButton("Cerrar", callback_data=f"adminreq:close:{request_id}"),
-                InlineKeyboardButton("Fallida", callback_data=f"adminreq:fail:{request_id}"),
+                InlineKeyboardButton("📁 Cerrar", callback_data=f"adminreq:close:{request_id}"),
+                InlineKeyboardButton("⚠️ Fallida", callback_data=f"adminreq:fail:{request_id}"),
             ],
         ]
     else:
         rows = [
             [
-                InlineKeyboardButton("Reabrir", callback_data=f"adminreq:reopen:{request_id}"),
-                InlineKeyboardButton("Plantillas", callback_data=f"adminreq:templates:{request_id}"),
+                InlineKeyboardButton("🔄 Reabrir", callback_data=f"adminreq:reopen:{request_id}"),
+                InlineKeyboardButton("📝 Plantillas", callback_data=f"adminreq:templates:{request_id}"),
             ]
         ]
     return InlineKeyboardMarkup(rows)
@@ -712,7 +721,7 @@ def _build_template_keyboard(request_id: int):
     for idx in range(0, len(items), 2):
         pair = items[idx: idx + 2]
         rows.append([InlineKeyboardButton(key, callback_data=f"adminreq:tpl:{request_id}:{key}") for key in pair])
-    rows.append([InlineKeyboardButton("Volver", callback_data=f"adminreq:back:{request_id}")])
+    rows.append([InlineKeyboardButton("↩️ Volver a la solicitud", callback_data=f"adminreq:back:{request_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -769,7 +778,7 @@ async def _send_request_reply(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
 
     if _should_charge(reply_text):
         try:
-            charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+            charged = await _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
         except RequestChargeError as exc:
             conn.close()
             return False, str(exc)
@@ -909,7 +918,7 @@ async def _send_template_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int
 
     if _should_charge(template_text, template_key):
         try:
-            charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+            charged = await _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
         except RequestChargeError as exc:
             conn.close()
             return False, str(exc)
@@ -962,7 +971,7 @@ async def _update_admin_message_markup(context: ContextTypes.DEFAULT_TYPE, reque
     conn.close()
     if not row:
         return
-    _sync_request_payload(_request_row_to_payload(row))
+    await _sync_request_payload_async(_request_row_to_payload(row))
     _, _, _, _, _, status, admin_msg_id, _, _, _, _, _, _, _ = row[:14]
     admin_chat_id = primary_admin_id()
     if not admin_chat_id or not admin_msg_id:
@@ -1000,9 +1009,9 @@ async def create_request(
 ):
     user = update.effective_user
     message = update.message
-    from nexora.comandos.utils import get_command_runtime_config
+    from nexora.comandos.utils import get_command_runtime_config_async
 
-    cfg = get_command_runtime_config(command, cost)
+    cfg = await get_command_runtime_config_async(command, cost)
     cost = int(cfg.get("cost", cost))
 
     media_source = _request_media_source(message)
@@ -1050,8 +1059,8 @@ async def create_request(
     request_id = c.lastrowid
     conn.commit()
     conn.close()
-    _sync_request_by_id(request_id)
-    _log_historial(user.id, command, payload)
+    await _sync_request_by_id_async(request_id)
+    await _log_historial_async(user.id, command, payload)
 
     user_status_text = (
         "\n".join(
@@ -1113,7 +1122,7 @@ async def create_request(
     c.execute("UPDATE requests SET admin_msg_id=? WHERE id=?", (sent.message_id, request_id))
     conn.commit()
     conn.close()
-    _sync_request_by_id(request_id)
+    await _sync_request_by_id_async(request_id)
 
 
 async def reply_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1170,7 +1179,7 @@ async def forward_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delivered = False
 
     try:
-        charged = _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
+        charged = await _maybe_charge_request(c, request_id, user_id, cost, int(charged or 0))
     except RequestChargeError as exc:
         await update.message.reply_text(str(exc))
         conn.close()
@@ -1194,7 +1203,7 @@ async def forward_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_voice(**delivery_kwargs, voice=update.message.voice.file_id, caption=_build_delivery_caption(intro, caption))
             delivered = True
     except NetworkError:
-        _mark_delivery_uncertain(row, note, author_id=update.effective_user.id, charged=charged)
+        await _mark_delivery_uncertain(row, note, author_id=update.effective_user.id, charged=charged)
         await update.message.reply_text(
             f"⚠️ Telegram no confirmó la entrega del archivo para la solicitud #{request_id}. "
             "Revisa el chat del usuario y concilia el estado en el panel antes de reintentar."

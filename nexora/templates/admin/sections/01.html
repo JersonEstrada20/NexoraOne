@@ -1,0 +1,67 @@
+      {% if active_section == 'resumen' %}
+      <div id="sec-resumen" class="card">
+        <div class="section-heading">
+          <div><span class="eyebrow">VISTA GENERAL</span><h2>Resumen</h2></div>
+          <span class="live-pill"><span aria-hidden="true"></span> Sesión activa</span>
+        </div>
+        <div class="summary">
+          <div class="metric"><span class="pill">🗂️ Categorías</span><h3>{{ categories|length }}</h3><div class="small">Secciones del catálogo</div></div>
+          <div class="metric"><span class="pill">⚡ Comandos</span><h3>{{ commands|length }}</h3><div class="small">Servicios registrados</div></div>
+          <div class="metric"><span class="pill">✅ Activos</span><h3>{{ commands|selectattr('is_active')|list|length }}</h3><div class="small">Disponibles para uso</div></div>
+          <div class="metric"><span class="pill">🛍️ Paquetes</span><h3>{{ buy_packages|length }}</h3><div class="small">Opciones de compra</div></div>
+        </div>
+        {% if dashboard.summary_errors %}
+        <div class="flash" role="alert">No se pudieron cargar algunos indicadores del resumen. Revisa <a href="{{ url_for('admin_panel', section='sistema') }}">Sistema</a> y los registros para ver el detalle.</div>
+        {% endif %}
+        {% if panel_role in ['FUNDADOR', 'CO-FUNDADOR', 'SOPORTE'] %}
+        <div class="section-grid u-mt-16">
+          <div class="mini-card">
+            <div class="toolbar"><strong>Atención</strong><a href="{{ url_for('admin_panel', section='solicitudes') }}">Abrir bandeja</a></div>
+            <h3>{% if dashboard.summary_loaded %}{{ dashboard.pendientes }}{% else %}No disponible{% endif %} solicitudes pendientes</h3>
+            <div class="small">Solicitudes recibidas que todavía esperan respuesta.</div>
+          </div>
+          {% if panel_role == 'FUNDADOR' %}
+          <div class="mini-card">
+            <div class="toolbar"><strong>Errores del último día</strong><a href="{{ url_for('admin_panel', section='sistema') }}">Ver sistema</a></div>
+            <h3>{% if dashboard.error_logs_loaded %}{{ dashboard.errores_recientes }}{% else %}—{% endif %}</h3>
+            <div class="small">Dentro de los últimos 50 errores guardados.</div>
+          </div>
+          {% endif %}
+        </div>
+        <div class="card u-mt-16">
+          <h3>Actividad reciente</h3>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Comando</th><th>Fecha</th></tr></thead>
+              <tbody>
+                {% if not dashboard.activity_loaded %}
+                <tr><td colspan="2">No se pudo cargar la actividad. Revisa Sistema y vuelve a intentarlo.</td></tr>
+                {% else %}
+                  {% for item in dashboard.actividad_reciente %}
+                  <tr><td><strong>{{ item.consulta }}</strong></td><td>{{ item.fecha }}</td></tr>
+                  {% endfor %}
+                  {% if not dashboard.actividad_reciente %}
+                <tr><td colspan="2">Todavía no hay actividad para mostrar.</td></tr>
+                  {% endif %}
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+        <div class="preview-grid">
+          <div class="preview-card">
+            <strong>Preview /start</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.start }}</div></div>
+          </div>
+          <div class="preview-card">
+            <strong>Preview /buy</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.buy }}</div></div>
+          </div>
+          <div class="preview-card">
+            <strong>Preview /cmds</strong>
+            <div class="telegram-preview"><div class="telegram-bubble">{{ previews.cmds }}</div></div>
+          </div>
+        </div>
+      </div>
+      {% endif %}

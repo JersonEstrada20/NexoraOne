@@ -1,5 +1,7 @@
 # Despliegue en Northflank
 
+**Estado:** la migración ya se completó. Northflank es el entorno principal y la rama `deploy/northflank-migration` contiene la configuración usada por los servicios actuales. Este documento queda como guía de configuración y recuperación; no recrees los servicios ni inicialices/importes otra base para una actualización normal.
+
 ## Arquitectura
 
 El proyecto usa dos servicios conectados al mismo repositorio de GitHub:
@@ -46,6 +48,7 @@ Configura desde Environment/Secrets de Northflank; nunca las guardes en Git.
 | `TURSO_AUTH_TOKEN` | Token nuevo de Turso. Revoca el token anterior y crea uno nuevo antes del despliegue |
 | `NEXORA_INTERNAL_API_KEY` | Clave interna actual compartida con el bot |
 | `NEXORA_ADMIN_ID` | ID numérico del administrador principal |
+| `NEXORA_OWNER_ID` | ID numérico del dueño principal; define el mismo valor que `OWNER_USER_ID` |
 | `NEXORA_BOT_NAME` | `NEXORA ONE` |
 | `NEXORA_DATA_DIR` | `/data` |
 | `NEXORA_PANEL_PUBLIC` | `true` |
@@ -61,6 +64,7 @@ Configura desde Environment/Secrets de Northflank; nunca las guardes en Git.
 | --- | --- |
 | `BOT_TOKEN` | El mismo token actual del bot |
 | `OWNER_USER_ID` | ID numérico del dueño |
+| `NEXORA_OWNER_ID` | El mismo ID numérico del dueño, para las funciones administrativas del panel |
 | `BACKUP_CHAT_ID` | ID del chat privado de respaldos |
 | `DATABASE_BACKEND` | `turso` |
 | `TURSO_DATABASE_URL` | URL actual de la base Turso; cópiala desde la consola de Turso |
@@ -74,6 +78,8 @@ Configura desde Environment/Secrets de Northflank; nunca las guardes en Git.
 
 No copies valores desde capturas o logs; escribe los secretos directamente en los campos protegidos de Northflank. No rotes el token de Telegram, credenciales de Turso ni la clave interna durante el cambio.
 
+Configura `BACKUP_CHAT_ID` con el ID del chat privado donde el bot ya guarda las copias. Si lo dejas vacío o en `0`, el bot no enviará copias a Telegram; no existe un ID de respaldo predeterminado en el código.
+
 ## Verificar y cambiar el tráfico
 
 1. Comprueba que `/health` de la web responde y que indica `Turso (remoto)`.
@@ -81,6 +87,13 @@ No copies valores desde capturas o logs; escribe los secretos directamente en lo
 3. Prueba el panel, `/me`, y una operación de bajo riesgo del bot. Confirma que el panel muestra la información que ya estaba guardada en Turso.
 4. Mantén Oracle intacto durante la validación. Para revertir: detén el bot de Northflank y vuelve a iniciar el bot de Oracle. Nunca dejes dos bots haciendo polling a la vez.
 5. Después de confirmar estabilidad, conecta los servicios a `main` o configura la rama y despliegue continuo que quieras usar. Northflank puede compilar Dockerfiles desde GitHub en cada cambio de la rama seleccionada.
+
+### Reversión sin recrear servicios ni datos
+
+1. Si el cambio afecta solo al bot, detén temporalmente `nexoraone` para evitar dos procesos de polling mientras restauras una versión anterior.
+2. Conserva los servicios y las variables actuales; ambos deben seguir apuntando a la misma base Turso.
+3. En Northflank, despliega el último commit estable en los servicios afectados. Oracle ya no forma parte de la ruta de recuperación.
+4. Confirma `/status` en Telegram y `/health` de la web. Comprueba que el worker responde y que la base aparece como Turso remoto antes de reanudar cambios.
 
 ## Seguridad y recuperación
 
@@ -96,13 +109,24 @@ No copies valores desde capturas o logs; escribe los secretos directamente en lo
 - [Crear servicios desde Git y Dockerfile](https://northflank.com/docs/v1/application/build/build-with-a-dockerfile)
 - [Puertos internos entre servicios](https://northflank.com/docs/v1/application/network/configure-ports)
 
-## Evitar despliegues antes de CI
+## CI, protecciones de rama y despliegue
 
-El workflow Tests ejecuta la suite, pero Northflank puede desplegar en paralelo cuando observa un push. Para que los tests sí sean un bloqueo:
+El workflow `Tests` valida los cambios, pero no bloquea por sí mismo los despliegues de Northflank. La protección requiere configurar GitHub y ambos servicios:
 
-1. En GitHub, configura una regla para la rama de producción que exija pull request y el check de test antes de permitir el merge.
-2. En ambos servicios de Northflank, desactiva el despliegue automático desde la rama de trabajo actual.
-3. Haz que los servicios sigan únicamente la rama protegida de producción.
-4. Fusiona cambios solo cuando Tests / test aparezca en verde.
+1. La protección de `deploy/northflank-migration` ya está guardada en GitHub: exige PR y el check `test`. Si se recrea la regla, verifica que seleccione ese check de GitHub Actions. No habilites la inclusión automática de administradores si el dueño necesita una vía de recuperación.
+2. En Northflank, `nexoraoneweb` y `nexoraone` tienen CI activo y CD automático desactivado. Mantén ambos servicios apuntando a la misma rama protegida.
+3. Flujo normal: crea una rama de cambio → abre un pull request hacia `deploy/northflank-migration` → espera a que `Tests / test` termine en verde → fusiona → comprueba que web y bot están en el mismo commit → despliega manualmente ambos servicios desde ese commit. Mantén una sola réplica del bot.
+4. Tras cambiar la rama de producción, actualiza la regla y los dos servicios juntos. No dejes un servicio siguiendo `main` y el otro siguiendo `deploy/northflank-migration`.
+5. Para recuperar una versión, elige el mismo commit estable en ambos servicios y confirma `/health` y `/status` después del despliegue.
 
-Mientras Northflank siga siguiendo deploy/northflank-migration sin una regla de CI, el workflow solo avisa del fallo; no impide que se despliegue. Los avisos de correo de GitHub Actions son independientes de los errores de la aplicación.
+Si Northflank tiene auto-deploy habilitado, puede empezar a desplegar al recibir un push antes de que GitHub Actions termine; la protección de rama por sí sola no evita despliegues de pushes directos a una rama. Antes de depender de este bloqueo, confirma que el auto-deploy está desactivado en los dos servicios.
+
+### Avisos de GitHub Actions
+
+Los avisos se controlan en [GitHub → Settings → Notifications](https://github.com/settings/notifications), no desde este repositorio. **Only notify for failed workflows** elimina los avisos de ejecuciones exitosas, pero conserva los correos de fallos. Si tampoco quieres recibir esos correos, desactiva las notificaciones de Actions; los resultados siguen visibles en la pestaña **Actions** del repositorio. No uses `continue-on-error` ni suprimas fallos para silenciarlos.
+
+## Documentación oficial
+
+- [Northflank: administrar CI/CD](https://northflank.com/docs/v1/application/release/manage-ci-cd)
+- [GitHub: ramas protegidas](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+- [GitHub: administrar avisos de Actions](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)

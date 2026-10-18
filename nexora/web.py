@@ -10,7 +10,6 @@ import secrets
 from collections import Counter
 import math
 import hashlib
-import secrets
 import time
 import os
 import json
@@ -219,20 +218,25 @@ def _clear_rate_limit(store: dict, key: str):
 
 
 def configured_admin_ids() -> set[str]:
-    raw = (
-        os.environ.get("NEXORA_ADMIN_ID")
-        or os.environ.get("SPIDERSYN_ADMIN_ID")
-        or os.environ.get("ADMIN_ID")
-        or CFG.get("ADMIN_ID")
-        or "7454664711"
+    candidates = (
+        os.environ.get("NEXORA_ADMIN_ID"),
+        os.environ.get("SPIDERSYN_ADMIN_ID"),
+        os.environ.get("ADMIN_ID"),
+        CFG.get("ADMIN_ID"),
+        os.environ.get("OWNER_USER_ID"),
+        os.environ.get("NEXORA_OWNER_ID"),
     )
-    if isinstance(raw, list):
-        values = raw
-    elif raw is None:
-        values = []
-    else:
-        values = str(raw).replace(",", " ").split()
-    return {str(value).strip() for value in values if str(value).strip()}
+    for raw in candidates:
+        if isinstance(raw, list):
+            values = raw
+        elif raw is None:
+            continue
+        else:
+            values = str(raw).replace(",", " ").split()
+        parsed = {str(value).strip() for value in values if str(value).strip().isdigit() and int(value) > 0}
+        if parsed:
+            return parsed
+    return set()
 
 
 def send_telegram_message_sync_detailed(chat_id: str | int, text: str) -> str:
@@ -737,10 +741,18 @@ def init_requests_db():
             method TEXT,
             message TEXT,
             traceback TEXT,
-            created_at TEXT
+            created_at TEXT,
+            reference TEXT,
+            source TEXT DEFAULT 'web'
         )
         """
     )
+    cur.execute("PRAGMA table_info(error_logs)")
+    error_columns = {row[1] for row in cur.fetchall()}
+    if "reference" not in error_columns:
+        cur.execute("ALTER TABLE error_logs ADD COLUMN reference TEXT")
+    if "source" not in error_columns:
+        cur.execute("ALTER TABLE error_logs ADD COLUMN source TEXT DEFAULT 'web'")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -1361,6 +1373,11 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
         "solicitudes_por_estado": [],
         "analytics_loaded": detailed,
         "summary_loaded": False,
+        "activity_loaded": False,
+        "summary_errors": [],
+        "analytics_sources": {"users": False, "history": False, "requests": False, "purchases": False},
+        "analytics_errors": [],
+        "error_logs_loaded": False,
     }
     # Keep expensive historical analytics on the stats page. The summary still
     # loads the small pending-count and latest-activity indicators it displays.
@@ -1373,7 +1390,8 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
             data["pendientes"] = cur.fetchone()[0]
             data["summary_loaded"] = True
         except Exception:
-            pass
+            data["summary_errors"].append("solicitudes")
+            app.logger.exception("No se pudo cargar el total de solicitudes pendientes del panel")
         finally:
             if conn:
                 conn.close()
@@ -1386,8 +1404,10 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
                 {"consulta": str(row[0] or "—"), "fecha": str(row[1] or "—")}
                 for row in cur.fetchall()
             ]
+            data["activity_loaded"] = True
         except Exception:
-            pass
+            data["summary_errors"].append("actividad")
+            app.logger.exception("No se pudo cargar la actividad reciente del panel")
         finally:
             if conn:
                 conn.close()
@@ -1416,17 +1436,25 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
             """
         )
         data["usuarios_por_estado"] = [{"estado": r[0], "total": r[1]} for r in cur.fetchall()]
+        data["analytics_sources"]["users"] = True
         conn.close()
     except Exception:
-        pass
+        data["analytics_errors"].append("usuarios")
+        app.logger.exception("No se pudieron cargar las estadísticas de usuarios")
     try:
         conn = get_conn(HIST_DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM historial")
-        data["consultas"] = cur.fetchone()[0]
-        for key, start in cutoff_iso.items():
-            cur.execute("SELECT COUNT(*) FROM historial WHERE fecha >= ?", (start,))
-            data["periods"][key]["consultas"] = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*), "
+            "SUM(CASE WHEN fecha >= ? THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN fecha >= ? THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN fecha >= ? THEN 1 ELSE 0 END) FROM historial",
+            (cutoff_iso["today"], cutoff_iso["last_7"], cutoff_iso["last_30"]),
+        )
+        history_counts = cur.fetchone()
+        data["consultas"] = int(history_counts[0] or 0)
+        for index, key in enumerate(cutoff_iso, start=1):
+            data["periods"][key]["consultas"] = int(history_counts[index] or 0)
         cur.execute("SELECT consulta, COUNT(*) total FROM historial GROUP BY consulta ORDER BY total DESC LIMIT 10")
         data["top_comandos"] = [{"consulta": r[0], "total": r[1]} for r in cur.fetchall()]
         cur.execute(
@@ -1456,25 +1484,37 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
             {"consulta": str(r[0] or "—"), "fecha": str(r[1] or "—")}
             for r in cur.fetchall()
         ]
+        data["analytics_sources"]["history"] = True
         conn.close()
     except Exception:
-        pass
+        data["analytics_errors"].append("historial")
+        app.logger.exception("No se pudieron cargar las estadísticas del historial")
     try:
-        recent_errors = get_error_logs(limit=50)
-        one_day_ago = (now - timedelta(days=1)).replace(microsecond=0).isoformat() + "Z"
-        data["errores_recientes"] = sum(
-            1 for item in recent_errors if str(item.get("created_at") or "") >= one_day_ago
-        )
+        recent_errors, data["error_logs_loaded"] = get_error_logs(limit=50, with_status=True)
+        if data["error_logs_loaded"]:
+            one_day_ago = (now - timedelta(days=1)).replace(microsecond=0).isoformat() + "Z"
+            data["errores_recientes"] = sum(
+                1 for item in recent_errors if str(item.get("created_at") or "") >= one_day_ago
+            )
+        else:
+            data["analytics_errors"].append("registros de errores")
     except Exception:
-        pass
+        data["analytics_errors"].append("registros de errores")
+        app.logger.exception("No se pudieron cargar las estadísticas de errores")
     try:
         conn = get_conn(REQUESTS_DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM requests WHERE status = 'pending'")
-        data["pendientes"] = cur.fetchone()[0]
-        for key, start in cutoff_iso.items():
-            cur.execute("SELECT COUNT(*) FROM requests WHERE created_at >= ?", (start,))
-            data["periods"][key]["solicitudes"] = cur.fetchone()[0]
+        cur.execute(
+            "SELECT SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'pending' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) FROM requests",
+            (cutoff_iso["today"], cutoff_iso["last_7"], cutoff_iso["last_30"]),
+        )
+        request_counts = cur.fetchone()
+        data["pendientes"] = int(request_counts[0] or 0)
+        for index, key in enumerate(cutoff_iso, start=1):
+            data["periods"][key]["solicitudes"] = int(request_counts[index] or 0)
         cur.execute(
             """
             SELECT COALESCE(NULLIF(TRIM(status), ''), 'sin estado') status, COUNT(*) total
@@ -1484,44 +1524,41 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
             """
         )
         data["solicitudes_por_estado"] = [{"status": r[0], "total": r[1]} for r in cur.fetchall()]
+        data["analytics_sources"]["requests"] = True
         conn.close()
     except Exception:
-        pass
+        data["analytics_errors"].append("solicitudes")
+        app.logger.exception("No se pudieron cargar las estadísticas de solicitudes")
     try:
         conn = get_conn(COMPRAS_DB_PATH)
         cur = conn.cursor()
+        purchase_where = "WHERE VENDEDOR = ?" if vendor_id else ""
+        purchase_params = []
+        period_selects = []
+        for start in cutoff_iso.values():
+            period_selects.extend([
+                "SUM(CASE WHEN FECHA >= ? THEN 1 ELSE 0 END)",
+                "SUM(CASE WHEN FECHA >= ? AND (UPPER(COMPRO) LIKE '%CRED%' OR UPPER(COMPRO) LIKE '%KEY:CREDITOS%') THEN 1 ELSE 0 END)",
+                "SUM(CASE WHEN FECHA >= ? AND (UPPER(COMPRO) LIKE '%DIA%' OR UPPER(COMPRO) LIKE '%KEY:DIAS%') THEN 1 ELSE 0 END)",
+            ])
+            purchase_params.extend([start, start, start])
         if vendor_id:
-            cur.execute("SELECT COUNT(*) FROM compras WHERE VENDEDOR = ?", (vendor_id,))
-        else:
-            cur.execute("SELECT COUNT(*) FROM compras")
-        data["ventas"] = cur.fetchone()[0]
-        for key, start in cutoff_iso.items():
-            if vendor_id:
-                cur.execute("SELECT COUNT(*) FROM compras WHERE FECHA >= ? AND VENDEDOR = ?", (start, vendor_id))
-            else:
-                cur.execute("SELECT COUNT(*) FROM compras WHERE FECHA >= ?", (start,))
-            data["periods"][key]["ventas"] = cur.fetchone()[0]
-            period_where = "WHERE FECHA >= ?"
-            period_params = [start]
-            if vendor_id:
-                period_where += " AND VENDEDOR = ?"
-                period_params.append(vendor_id)
-            cur.execute(
-                f"""
-                SELECT COUNT(*) total,
-                       SUM(CASE WHEN UPPER(COMPRO) LIKE '%CRED%' OR UPPER(COMPRO) LIKE '%KEY:CREDITOS%' THEN 1 ELSE 0 END) creditos,
-                       SUM(CASE WHEN UPPER(COMPRO) LIKE '%DIA%' OR UPPER(COMPRO) LIKE '%KEY:DIAS%' THEN 1 ELSE 0 END) dias
-                FROM compras
-                {period_where}
-                """,
-                tuple(period_params),
-            )
-            r = cur.fetchone()
+            purchase_params.append(vendor_id)
+        cur.execute(
+            f"SELECT COUNT(*), {', '.join(period_selects)} FROM compras {purchase_where}",
+            tuple(purchase_params),
+        )
+        purchase_counts = cur.fetchone()
+        data["ventas"] = int(purchase_counts[0] or 0)
+        for index, key in enumerate(cutoff_iso):
+            offset = 1 + index * 3
+            total, creditos, dias = (int(purchase_counts[offset + part] or 0) for part in range(3))
+            data["periods"][key]["ventas"] = total
             data["ventas_por_periodo"].append({
                 "label": data["periods"][key]["label"],
-                "total": int(r[0] or 0),
-                "creditos": int(r[1] or 0),
-                "dias": int(r[2] or 0),
+                "total": total,
+                "creditos": creditos,
+                "dias": dias,
             })
         purchase_where = "WHERE VENDEDOR = ?" if vendor_id else ""
         purchase_params = (vendor_id,) if vendor_id else ()
@@ -1576,9 +1613,12 @@ def get_dashboard_snapshot(vendor_id: str = "", detailed: bool = True):
             tuple(day_params),
         )
         data["ventas_por_dia"] = [{"dia": r[0], "total": r[1]} for r in cur.fetchall()]
+        data["analytics_sources"]["purchases"] = True
         conn.close()
     except Exception:
-        pass
+        data["analytics_errors"].append("compras")
+        app.logger.exception("No se pudieron cargar las estadísticas de compras")
+    data["analytics_loaded"] = detailed and not data["analytics_errors"]
     return data
 
 
@@ -1641,6 +1681,9 @@ def get_request_items_filtered(
     date_from: str = "",
     date_to: str = "",
     limit: int = 500,
+    offset: int = 0,
+    bucket: str = "",
+    with_count: bool = False,
 ):
     q = (q or "").strip().lower()
     status = (status or "").strip().lower()
@@ -1652,6 +1695,10 @@ def get_request_items_filtered(
     if status:
         clauses.append("LOWER(COALESCE(status, '')) = ?")
         params.append(status)
+    if bucket == "pending":
+        clauses.append("LOWER(COALESCE(status, '')) = 'pending'")
+    elif bucket == "recent":
+        clauses.append("LOWER(COALESCE(status, '')) != 'pending'")
     if command:
         clauses.append("LOWER(COALESCE(command, '')) = ?")
         params.append(command)
@@ -1683,6 +1730,10 @@ def get_request_items_filtered(
         conn = get_conn(REQUESTS_DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        total = 0
+        if with_count:
+            cur.execute(f"SELECT COUNT(*) FROM requests {where}", tuple(params))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             f"""
             SELECT id, user_id, username, command, payload, status, admin_msg_id, cost,
@@ -1692,14 +1743,33 @@ def get_request_items_filtered(
             {where}
             ORDER BY id DESC
             LIMIT ?
+            OFFSET ?
             """,
-            [*params, limit],
+            [*params, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))],
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return _attach_request_histories(rows)
+        rows = _attach_request_histories(rows)
+        return (rows, total) if with_count else rows
     except Exception:
-        return []
+        return ([], 0) if with_count else []
+
+
+def get_request_summary():
+    summary = {"counts": {"pending": 0, "resolved": 0, "cancelled": 0, "failed": 0}, "commands": []}
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT LOWER(COALESCE(status, '')), COUNT(*) FROM requests GROUP BY LOWER(COALESCE(status, ''))")
+        for status, count in cur.fetchall():
+            summary["counts"][str(status or "")] = int(count or 0)
+        cur.execute("SELECT DISTINCT LOWER(TRIM(command)) FROM requests WHERE TRIM(COALESCE(command, '')) != '' ORDER BY LOWER(TRIM(command))")
+        summary["commands"] = [str(row[0]) for row in cur.fetchall() if row[0]]
+        conn.close()
+    except Exception:
+        app.logger.exception("No se pudieron cargar los totales de solicitudes")
+    return summary
 
 
 def get_request_templates():
@@ -1874,7 +1944,7 @@ def get_user_activity(user_id: str, limit: int = 60):
     return activity[:limit]
 
 
-def get_key_items(q: str = "", tipo: str = "", status: str = "", limit: int = 200):
+def get_key_items(q: str = "", tipo: str = "", status: str = "", limit: int = 200, offset: int = 0, with_count: bool = False):
     q = (q or "").strip().upper()
     tipo = (tipo or "").strip().lower()
     status = (status or "").strip().lower()
@@ -1897,6 +1967,10 @@ def get_key_items(q: str = "", tipo: str = "", status: str = "", limit: int = 20
         elif status == "used":
             clauses.append("k.usos <= 0")
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        total = 0
+        if with_count:
+            cur.execute(f"SELECT COUNT(*) FROM keys k {where}", tuple(params))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             f"""
             SELECT k.key, k.tipo, k.cantidad, k.usos, k.creador_id, k.fecha_creacion,
@@ -1907,22 +1981,48 @@ def get_key_items(q: str = "", tipo: str = "", status: str = "", limit: int = 20
             GROUP BY k.key, k.tipo, k.cantidad, k.usos, k.creador_id, k.fecha_creacion
             ORDER BY k.fecha_creacion DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (*params, limit),
+            (*params, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
         items = [dict(row) for row in cur.fetchall()]
         conn.close()
     except Exception:
         items = []
-    return items
+        total = 0
+    return (items, total) if with_count else items
 
 
-def get_key_redemptions(limit: int = 80):
+def get_key_metrics():
+    metrics = {"total": 0, "available": 0, "used": 0, "redemptions": 0}
+    try:
+        init_keys_db()
+        conn = get_conn(KEYS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN COALESCE(usos, 0) > 0 THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN COALESCE(usos, 0) <= 0 THEN 1 ELSE 0 END) FROM keys"
+        )
+        row = cur.fetchone()
+        metrics["total"], metrics["available"], metrics["used"] = (int(value or 0) for value in row)
+        cur.execute("SELECT COUNT(*) FROM redemptions")
+        metrics["redemptions"] = int(cur.fetchone()[0] or 0)
+        conn.close()
+    except Exception:
+        app.logger.exception("No se pudieron cargar las métricas de keys")
+    return metrics
+
+
+def get_key_redemptions(limit: int = 80, offset: int = 0, with_count: bool = False):
     try:
         init_keys_db()
         conn = get_conn(KEYS_DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        total = 0
+        if with_count:
+            cur.execute("SELECT COUNT(*) FROM redemptions")
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             """
             SELECT r.key, r.user_id, r.fecha_canje, k.tipo, k.cantidad
@@ -1930,14 +2030,15 @@ def get_key_redemptions(limit: int = 80):
             JOIN keys k ON r.key = k.key
             ORDER BY r.fecha_canje DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (limit,),
+            (max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return rows
+        return (rows, total) if with_count else rows
     except Exception:
-        return []
+        return ([], 0) if with_count else []
 
 
 def update_key_uses(key: str, usos: int) -> bool:
@@ -2087,52 +2188,65 @@ def admin_request_attachment(request_id: int):
         return redirect(url_for("admin_panel", section="solicitudes", flash=f"No se pudo abrir el adjunto de #{request_id}."))
 
 
-def get_admin_users(q: str = "", status: str = "", plan: str = "", limit: int = 200):
+def _admin_user_filters(q: str = "", status: str = "", plan: str = ""):
     q = (q or "").strip().lower()
     status = (status or "").strip().upper()
     plan = (plan or "").strip().upper()
-    items = []
+    clauses = []
+    params = []
+    if q:
+        like = f"%{q}%"
+        clauses.append("(LOWER(id_tg) LIKE ? OR LOWER(COALESCE(rol_tg, '')) LIKE ? OR LOWER(COALESCE(user_web, '')) LIKE ? OR LOWER(COALESCE(number_wsp, '')) LIKE ? OR LOWER(COALESCE(plan, '')) LIKE ? OR LOWER(COALESCE(estado, '')) LIKE ?)")
+        params.extend([like] * 6)
+    if status:
+        clauses.append("UPPER(COALESCE(estado, '')) = ?")
+        params.append(status)
+    if plan:
+        clauses.append("UPPER(COALESCE(plan, '')) = ?")
+        params.append(plan)
+    return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def get_admin_users(q: str = "", status: str = "", plan: str = "", limit: int = 200, offset: int = 0):
+    where, params = _admin_user_filters(q, status, plan)
     try:
         conn = get_conn(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT id_tg, rol_tg, creditos, plan, estado, fecha_caducidad, antispam,
                    register_web, register_wsp, user_web, number_wsp
             FROM usuarios
+            {where}
             ORDER BY id_tg DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (limit,),
+            (*params, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
-        rows = [dict(row) for row in cur.fetchall()]
+        items = [dict(row) for row in cur.fetchall()]
         conn.close()
     except Exception:
-        rows = []
-    for row in rows:
-        if q:
-            hay = " ".join(
-                [
-                    str(row.get("id_tg") or ""),
-                    str(row.get("rol_tg") or ""),
-                    str(row.get("user_web") or ""),
-                    str(row.get("number_wsp") or ""),
-                    str(row.get("plan") or ""),
-                    str(row.get("estado") or ""),
-                ]
-            ).lower()
-            if q not in hay:
-                continue
-        if status and (row.get("estado") or "").upper() != status:
-            continue
-        if plan and (row.get("plan") or "").upper() != plan:
-            continue
-        items.append(row)
+        items = []
     return items
 
 
-def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = ""):
+def get_admin_users_count(q: str = "", status: str = "", plan: str = "") -> int:
+    where, params = _admin_user_filters(q, status, plan)
+    try:
+        conn = get_conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM usuarios {where}", tuple(params))
+        total = int(cur.fetchone()[0] or 0)
+        conn.close()
+        return total
+    except Exception:
+        app.logger.exception("No se pudo contar usuarios del panel")
+        return 0
+
+
+def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = "", offset: int = 0, with_count: bool = False):
     q = (q or "").strip().lower()
     vendor_id = (vendor_id or "").strip()
     items = []
@@ -2145,6 +2259,13 @@ def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = "")
         if vendor_id:
             where += " AND VENDEDOR = ?"
             params.append(vendor_id)
+        if q:
+            where += " AND LOWER(VENDEDOR) LIKE ?"
+            params.append(f"%{q}%")
+        total = 0
+        if with_count:
+            cur.execute(f"SELECT COUNT(DISTINCT VENDEDOR) FROM compras {where}", tuple(params))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             f"""
             SELECT VENDEDOR, COUNT(*) AS total_ventas, MAX(FECHA) AS ultima_venta
@@ -2153,17 +2274,17 @@ def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = "")
             GROUP BY VENDEDOR
             ORDER BY total_ventas DESC, ultima_venta DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (*params, limit),
+            (*params, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
     except Exception:
         rows = []
+        total = 0
     for row in rows:
         vendedor = str(row.get("VENDEDOR") or "").strip()
-        if q and q not in vendedor.lower():
-            continue
         items.append(
             {
                 "vendedor": vendedor,
@@ -2171,17 +2292,21 @@ def get_vendor_sales_summary(q: str = "", limit: int = 200, vendor_id: str = "")
                 "ultima_venta": row.get("ultima_venta") or "",
             }
         )
-    return items
+    return (items, total) if with_count else items
 
 
-def get_vendor_sales_detail(vendedor_id: str, limit: int = 100):
+def get_vendor_sales_detail(vendedor_id: str, limit: int = 100, offset: int = 0, with_count: bool = False):
     vendedor_id = (vendedor_id or "").strip()
     if not vendedor_id:
-        return []
+        return ([], 0) if with_count else []
     try:
         conn = get_conn(COMPRAS_DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        total = 0
+        if with_count:
+            cur.execute("SELECT COUNT(*) FROM compras WHERE VENDEDOR = ?", (vendedor_id,))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             """
             SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO
@@ -2189,14 +2314,15 @@ def get_vendor_sales_detail(vendedor_id: str, limit: int = 100):
             WHERE VENDEDOR = ?
             ORDER BY FECHA DESC, ID DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (vendedor_id, limit),
+            (vendedor_id, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return rows
+        return (rows, total) if with_count else rows
     except Exception:
-        return []
+        return ([], 0) if with_count else []
 
 
 def _date_bounds(date_from: str = "", date_to: str = ""):
@@ -2248,7 +2374,7 @@ PANEL_NAV_ITEMS = [
 ]
 
 
-def get_admin_purchases(user_id: str = "", vendor_id: str = "", date_from: str = "", date_to: str = "", kind: str = "", status: str = "", limit: int = 300, exact_vendor: bool = False):
+def get_admin_purchases(user_id: str = "", vendor_id: str = "", date_from: str = "", date_to: str = "", kind: str = "", status: str = "", limit: int = 300, exact_vendor: bool = False, offset: int = 0, with_count: bool = False):
     clauses = []
     params = []
     user_id = (user_id or "").strip()
@@ -2280,6 +2406,10 @@ def get_admin_purchases(user_id: str = "", vendor_id: str = "", date_from: str =
         conn = get_conn(COMPRAS_DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        total = 0
+        if with_count:
+            cur.execute(f"SELECT COUNT(*) FROM compras {where}", tuple(params))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             f"""
             SELECT ID, ID_TG, VENDEDOR, FECHA, COMPRO,
@@ -2290,17 +2420,19 @@ def get_admin_purchases(user_id: str = "", vendor_id: str = "", date_from: str =
             {where}
             ORDER BY FECHA DESC, ID DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (*params, limit),
+            (*params, max(1, min(100, int(limit))) if with_count else max(1, int(limit)), max(0, int(offset))),
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
     except Exception:
         rows = []
-    return rows
+        total = 0
+    return (rows, total) if with_count else rows
 
 
-def get_admin_history(user_id: str = "", command: str = "", platform: str = "", date_from: str = "", date_to: str = "", q: str = "", limit: int = 300):
+def get_admin_history(user_id: str = "", command: str = "", platform: str = "", date_from: str = "", date_to: str = "", q: str = "", limit: int = 300, offset: int = 0, with_count: bool = False):
     clauses = []
     params = []
     user_id = (user_id or "").strip()
@@ -2331,6 +2463,10 @@ def get_admin_history(user_id: str = "", command: str = "", platform: str = "", 
         conn = get_conn(HIST_DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        total = 0
+        if with_count:
+            cur.execute(f"SELECT COUNT(*) FROM historial {where}", tuple(params))
+            total = int(cur.fetchone()[0] or 0)
         cur.execute(
             f"""
             SELECT ID, ID_TG, consulta, valor, fecha, plataforma
@@ -2338,14 +2474,29 @@ def get_admin_history(user_id: str = "", command: str = "", platform: str = "", 
             {where}
             ORDER BY fecha DESC, ID DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (*params, limit),
+            (*params, max(1, min(100, int(limit))), max(0, int(offset))),
         )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
     except Exception:
         rows = []
-    return rows
+        total = 0
+    return (rows, total) if with_count else rows
+
+
+def get_admin_history_commands():
+    try:
+        conn = get_conn(HIST_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT LOWER(TRIM(consulta)) FROM historial WHERE TRIM(COALESCE(consulta, '')) != '' ORDER BY LOWER(TRIM(consulta))")
+        commands = [str(row[0]) for row in cur.fetchall() if row[0]]
+        conn.close()
+        return commands
+    except Exception:
+        app.logger.exception("No se pudieron cargar los comandos del historial")
+        return []
 
 
 def get_user_request_items(user_id: str, limit: int = 80):
@@ -2535,57 +2686,72 @@ def get_health_metrics():
         "solicitudes": {"pending": 0, "resolved": 0, "cancelled": 0, "failed": 0},
         "errores": {"ultimos_15m": 0, "ultimos_24h": 0},
         "catalogo": {"categories": 0, "commands": 0, "active_commands": 0, "buy_packages": 0},
+        "sources": {"usuarios_catalogo": "pending", "keys": "pending", "solicitudes_errores": "pending"},
+        "errors": [],
     }
-    try:
-        conn = get_conn(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM usuarios")
-        metrics["usuarios"]["total"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, 'ACTIVO')) != 'BANEADO'")
-        metrics["usuarios"]["activos"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, '')) = 'BANEADO'")
-        metrics["usuarios"]["baneados"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM command_categories")
-        metrics["catalogo"]["categories"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM command_catalog")
-        metrics["catalogo"]["commands"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM command_catalog WHERE COALESCE(is_active, 1) = 1")
-        metrics["catalogo"]["active_commands"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM buy_packages WHERE COALESCE(is_active, 1) = 1")
-        metrics["catalogo"]["buy_packages"] = int(cur.fetchone()[0] or 0)
-        conn.close()
-    except Exception:
-        pass
-    try:
-        conn = get_conn(KEYS_DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM keys")
-        metrics["keys"]["total"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM keys WHERE COALESCE(usos, 0) > 0")
-        metrics["keys"]["disponibles"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM keys WHERE COALESCE(usos, 0) <= 0")
-        metrics["keys"]["agotadas"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM redemptions")
-        metrics["keys"]["canjes"] = int(cur.fetchone()[0] or 0)
-        conn.close()
-    except Exception:
-        pass
-    try:
-        conn = get_conn(REQUESTS_DB_PATH)
-        cur = conn.cursor()
-        for status in metrics["solicitudes"].keys():
-            cur.execute("SELECT COUNT(*) FROM requests WHERE status = ?", (status,))
-            metrics["solicitudes"][status] = int(cur.fetchone()[0] or 0)
-        now = now_utc()
-        cutoff_15 = (now - timedelta(minutes=15)).replace(microsecond=0).isoformat() + "Z"
-        cutoff_24 = (now - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
-        cur.execute("SELECT COUNT(*) FROM error_logs WHERE created_at >= ?", (cutoff_15,))
-        metrics["errores"]["ultimos_15m"] = int(cur.fetchone()[0] or 0)
-        cur.execute("SELECT COUNT(*) FROM error_logs WHERE created_at >= ?", (cutoff_24,))
-        metrics["errores"]["ultimos_24h"] = int(cur.fetchone()[0] or 0)
-        conn.close()
-    except Exception:
-        pass
+    sources = (
+        ("usuarios_catalogo", DB_PATH),
+        ("keys", KEYS_DB_PATH),
+        ("solicitudes_errores", REQUESTS_DB_PATH),
+    )
+    for source, db_path in sources:
+        conn = None
+        try:
+            conn = get_conn(db_path)
+            cur = conn.cursor()
+            if source == "usuarios_catalogo":
+                cur.execute(
+                    "SELECT (SELECT COUNT(*) FROM usuarios), "
+                    "(SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, 'ACTIVO')) != 'BANEADO'), "
+                    "(SELECT COUNT(*) FROM usuarios WHERE UPPER(COALESCE(estado, '')) = 'BANEADO'), "
+                    "(SELECT COUNT(*) FROM command_categories), "
+                    "(SELECT COUNT(*) FROM command_catalog), "
+                    "(SELECT COUNT(*) FROM command_catalog WHERE COALESCE(is_active, 1) = 1), "
+                    "(SELECT COUNT(*) FROM buy_packages WHERE COALESCE(is_active, 1) = 1)"
+                )
+                values = [int(value or 0) for value in cur.fetchone()]
+                for key, value in zip(("total", "activos", "baneados"), values[:3]):
+                    metrics["usuarios"][key] = value
+                for key, value in zip(("categories", "commands", "active_commands", "buy_packages"), values[3:]):
+                    metrics["catalogo"][key] = value
+            elif source == "keys":
+                cur.execute(
+                    "SELECT COUNT(*), "
+                    "SUM(CASE WHEN COALESCE(usos, 0) > 0 THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN COALESCE(usos, 0) <= 0 THEN 1 ELSE 0 END), "
+                    "(SELECT COUNT(*) FROM redemptions) FROM keys"
+                )
+                for key, value in zip(("total", "disponibles", "agotadas", "canjes"), cur.fetchone()):
+                    metrics["keys"][key] = int(value or 0)
+            else:
+                now = now_utc()
+                cutoff_15 = (now - timedelta(minutes=15)).replace(microsecond=0).isoformat() + "Z"
+                cutoff_24 = (now - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+                cur.execute(
+                    "SELECT "
+                    "(SELECT COUNT(*) FROM requests WHERE LOWER(COALESCE(status, '')) = 'pending'), "
+                    "(SELECT COUNT(*) FROM requests WHERE LOWER(COALESCE(status, '')) = 'resolved'), "
+                    "(SELECT COUNT(*) FROM requests WHERE LOWER(COALESCE(status, '')) = 'cancelled'), "
+                    "(SELECT COUNT(*) FROM requests WHERE LOWER(COALESCE(status, '')) = 'failed'), "
+                    "(SELECT COUNT(*) FROM error_logs WHERE created_at >= ?), "
+                    "(SELECT COUNT(*) FROM error_logs WHERE created_at >= ?) "
+                    "FROM (SELECT 1) AS singleton",
+                    (cutoff_15, cutoff_24),
+                )
+                row = cur.fetchone()
+                values = [int(value or 0) for value in (row or (0, 0, 0, 0, 0, 0))]
+                for key, value in zip(("pending", "resolved", "cancelled", "failed"), values[:4]):
+                    metrics["solicitudes"][key] = value
+                metrics["errores"]["ultimos_15m"] = values[4]
+                metrics["errores"]["ultimos_24h"] = values[5]
+            metrics["sources"][source] = "ok"
+        except Exception:
+            metrics["sources"][source] = "error"
+            metrics["errors"].append(source)
+            app.logger.exception("No se pudieron cargar las métricas de salud de %s", source)
+        finally:
+            if conn:
+                conn.close()
     return metrics
 
 
@@ -2607,9 +2773,19 @@ def get_runtime_status() -> dict:
             current_api_base = f"{proto}://{request.host}".rstrip("/")
         except Exception:
             current_api_base = ""
+    worker_age_seconds = None
+    worker_online = False
+    if last_worker_seen:
+        try:
+            worker_age_seconds = (now_utc() - parse_iso(last_worker_seen)).total_seconds()
+            worker_online = -60 <= worker_age_seconds <= 180
+        except (TypeError, ValueError):
+            worker_age_seconds = None
     return {
         "web_online": True,
-        "worker_online": bool(last_worker_seen),
+        "worker_online": worker_online,
+        "worker_status": "online" if worker_online else ("stale" if last_worker_seen else "offline"),
+        "worker_age_seconds": int(worker_age_seconds) if worker_age_seconds is not None else None,
         "api_base": current_api_base,
         "data_volume": storage.get("railway_mount") or storage.get("data_dir") or "",
         "last_worker_seen": last_worker_seen,
@@ -2672,6 +2848,12 @@ def default_public_asset(filename: str):
     safe_name = secure_filename(os.path.basename(filename))
     if not safe_name or safe_name != os.path.basename(filename):
         return jsonify({"status": "error", "message": "Archivo inválido"}), 400
+    # Keep old public URLs working while storing the identical default artwork once.
+    safe_name = {
+        "ft_buy.png": "ft_cmds.png",
+        "ft_cmdsadmin.png": "ft_cmds.png",
+        "ft_start.png": "ft_cmds.png",
+    }.get(safe_name, safe_name)
     path = os.path.join(default_assets_dir(), safe_name)
     if not os.path.exists(path):
         return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
@@ -2698,7 +2880,7 @@ def get_daily_backups(limit: int = 20):
                     "created_at": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(timespec="seconds"),
                 }
             )
-        items.sort(key=lambda row: row["name"], reverse=True)
+        items.sort(key=lambda row: row["created_at"], reverse=True)
         return items[:limit]
     except Exception:
         return []
@@ -2792,7 +2974,7 @@ def get_history_cleanup_preview():
     return preview
 
 
-def get_error_logs(limit: int = 50):
+def get_error_logs(limit: int = 50, with_status: bool = False, reference: str = ""):
     try:
         conn = get_conn(REQUESTS_DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -2805,24 +2987,37 @@ def get_error_logs(limit: int = 50):
                 method TEXT,
                 message TEXT,
                 traceback TEXT,
-                created_at TEXT
+                created_at TEXT,
+                reference TEXT,
+                source TEXT DEFAULT 'web'
             )
             """
         )
-        cur.execute(
-            """
-            SELECT id, path, method, message, traceback, created_at
-            FROM error_logs
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        cur.execute("PRAGMA table_info(error_logs)")
+        error_columns = {row[1] for row in cur.fetchall()}
+        if "reference" not in error_columns:
+            cur.execute("ALTER TABLE error_logs ADD COLUMN reference TEXT")
+        if "source" not in error_columns:
+            cur.execute("ALTER TABLE error_logs ADD COLUMN source TEXT DEFAULT 'web'")
+        ref = (reference or "").strip().upper()
+        if ref:
+            cur.execute(
+                "SELECT id, path, method, message, traceback, created_at, reference, source "
+                "FROM error_logs WHERE UPPER(reference) = ? ORDER BY id DESC LIMIT 1",
+                (ref,),
+            )
+        else:
+            cur.execute(
+                "SELECT id, path, method, message, traceback, created_at, reference, source "
+                "FROM error_logs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return rows
+        return (rows, True) if with_status else rows
     except Exception:
-        return []
+        app.logger.exception("No se pudieron leer los registros de errores")
+        return ([], False) if with_status else []
 
 
 def get_audit_logs(limit: int = 80, action: str = "", actor: str = "", target: str = ""):
@@ -4425,17 +4620,30 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     storage = get_storage_snapshot()
-    ok = all(item["exists"] for item in storage["items"])
     metrics = get_health_metrics()
-    if metrics["errores"]["ultimos_15m"] >= 3:
-        ok = False
+    runtime = get_runtime_status()
+    storage_available = bool(storage.get("items")) and all(item.get("exists") for item in storage["items"])
+    database_sources = metrics.get("sources") or {}
+    available_sources = sum(source == "ok" for source in database_sources.values())
+    data_status = "available" if database_sources and available_sources == len(database_sources) and storage_available else (
+        "partial" if available_sources else "unavailable"
+    )
+    has_recent_errors = metrics.get("errores", {}).get("ultimos_15m", 0) >= 3
+    status = "ok" if data_status == "available" and runtime["worker_online"] and not has_recent_errors else "warn"
     return jsonify(
         {
-            "status": "ok" if ok else "warn",
+            "status": status,
+            "components": {
+                "web": "online",
+                "data": data_status,
+                "storage": "available" if storage_available else "unavailable",
+                "worker": runtime["worker_status"],
+                "database_sources": database_sources,
+            },
             "message": "NEXORA ONE healthcheck",
             "storage": storage,
             "metrics": metrics,
-            "runtime": get_runtime_status(),
+            "runtime": runtime,
             "time": now_iso(),
         }
     ), 200
@@ -4523,6 +4731,13 @@ def admin_panel():
     if gate:
         return gate
     flash = request.args.get("flash", "")
+    flash_message = flash.casefold()
+    if any(token in flash_message for token in ("no se pudo", "no tienes permiso", "inválid", "no encontré", "falta ", "solo el fundador", "error")):
+        flash_state = "error"
+    elif any(token in flash_message for token in ("guardad", "eliminad", "limpiad", "reabiert", "actualizad", "cread", "duplicad", "importad", "restaurad", "confirmad", "enviado")):
+        flash_state = "success"
+    else:
+        flash_state = "info"
     active_section = (request.args.get("section") or "resumen").strip().lower()
     if active_section not in {"resumen", "buscar", "categorias", "comandos", "buy", "usuarios", "usuario", "compras", "historial", "vendedores", "ajustes", "solicitudes", "keys", "herramientas", "sistema", "estadisticas"}:
         active_section = "resumen"
@@ -4530,19 +4745,35 @@ def admin_panel():
     if not panel_can_access_section(active_section, panel_role):
         return redirect(url_for("admin_panel", section="resumen", flash="No tienes permiso para esa sección."))
     seller_vendor_scope = panel_seller_vendor_scope()
-    categories = get_catalog_categories()
-    commands = get_catalog_commands()
-    settings = get_panel_settings()
+    needs_summary = active_section == "resumen"
+    needs_categories = active_section in {"resumen", "categorias", "comandos", "herramientas"}
+    needs_commands = active_section in {"resumen", "comandos"}
+    needs_buy_packages = active_section in {"resumen", "buy"}
+    needs_settings = active_section in {"resumen", "ajustes"}
+    categories = get_catalog_categories() if needs_categories else []
+    commands = get_catalog_commands() if needs_commands else []
+    settings = get_panel_settings() if needs_settings else {}
     health_summary = {"runtime": {}, "metrics": {}}
     if active_section == "sistema":
         health_summary = {"runtime": get_runtime_status(), "metrics": get_health_metrics()}
-    buy_packages = get_buy_packages()
+    buy_packages = get_buy_packages() if needs_buy_packages else []
     global_q = request.args.get("gq", "")
     global_results = get_global_search_results(global_q) if global_q else []
     user_q = request.args.get("uq", "")
     user_status = (request.args.get("ustatus") or "").upper()
     user_plan = (request.args.get("uplan") or "").upper()
-    admin_users = get_admin_users(q=user_q, status=user_status, plan=user_plan, limit=250) if active_section == "usuarios" else []
+    try:
+        user_page = max(1, int(request.args.get("upage") or 1))
+    except (TypeError, ValueError):
+        user_page = 1
+    user_page_size = 50
+    user_total = get_admin_users_count(q=user_q, status=user_status, plan=user_plan) if active_section == "usuarios" else 0
+    user_total_pages = max(1, math.ceil(user_total / user_page_size))
+    user_page = min(user_page, user_total_pages)
+    admin_users = get_admin_users(
+        q=user_q, status=user_status, plan=user_plan,
+        limit=user_page_size, offset=(user_page - 1) * user_page_size,
+    ) if active_section == "usuarios" else []
     profile_user_id = (request.args.get("uid") or request.args.get("user_id") or "").strip()
     user_profile = get_user_profile_snapshot(profile_user_id) if profile_user_id and active_section == "usuario" else {"user": None, "purchases": [], "history": [], "requests": [], "keys": [], "activity": []}
     purchase_user = request.args.get("purchase_user", "")
@@ -4553,82 +4784,180 @@ def admin_panel():
     purchase_to = request.args.get("purchase_to", "")
     purchase_kind = request.args.get("purchase_kind", "")
     purchase_status = (request.args.get("purchase_status") or "").upper()
-    purchases = get_admin_purchases(
+    try:
+        purchase_page = max(1, int(request.args.get("purchase_page") or 1))
+    except (TypeError, ValueError):
+        purchase_page = 1
+    purchase_page_size = 50
+    purchases, purchases_total = get_admin_purchases(
         user_id=purchase_user,
         vendor_id=purchase_vendor,
         date_from=purchase_from,
         date_to=purchase_to,
         kind=purchase_kind,
         status=purchase_status,
-        limit=300,
+        limit=purchase_page_size,
         exact_vendor=bool(seller_vendor_scope),
-    ) if active_section == "compras" else []
+        offset=(purchase_page - 1) * purchase_page_size,
+        with_count=True,
+    ) if active_section == "compras" else ([], 0)
+    purchase_total_pages = max(1, math.ceil(purchases_total / purchase_page_size))
+    if purchase_page > purchase_total_pages and active_section == "compras":
+        purchases = get_admin_purchases(
+            user_id=purchase_user, vendor_id=purchase_vendor, date_from=purchase_from,
+            date_to=purchase_to, kind=purchase_kind, status=purchase_status,
+            limit=purchase_page_size, exact_vendor=bool(seller_vendor_scope),
+            offset=(purchase_total_pages - 1) * purchase_page_size,
+        )
+    purchase_page = min(purchase_page, purchase_total_pages)
     history_user = request.args.get("history_user", "")
     history_command = request.args.get("history_command", "")
     history_platform = request.args.get("history_platform", "")
     history_from = request.args.get("history_from", "")
     history_to = request.args.get("history_to", "")
     history_q = request.args.get("history_q", "")
-    history_rows = get_admin_history(
+    try:
+        history_page = max(1, int(request.args.get("history_page") or 1))
+    except (TypeError, ValueError):
+        history_page = 1
+    history_page_size = 50
+    history_rows, history_total = get_admin_history(
         user_id=history_user,
         command=history_command,
         platform=history_platform,
         date_from=history_from,
         date_to=history_to,
         q=history_q,
-        limit=300,
-    ) if active_section == "historial" else []
-    history_commands = sorted({(row.get("consulta") or "").strip().lower() for row in get_admin_history(limit=1000) if row.get("consulta")}) if active_section == "historial" else []
+        limit=history_page_size,
+        offset=(history_page - 1) * history_page_size,
+        with_count=True,
+    ) if active_section == "historial" else ([], 0)
+    history_total_pages = max(1, math.ceil(history_total / history_page_size))
+    if history_page > history_total_pages and active_section == "historial":
+        history_rows = get_admin_history(
+            user_id=history_user, command=history_command, platform=history_platform,
+            date_from=history_from, date_to=history_to, q=history_q,
+            limit=history_page_size, offset=(history_total_pages - 1) * history_page_size,
+        )
+    history_page = min(history_page, history_total_pages)
+    history_commands = get_admin_history_commands() if active_section == "historial" else []
     vendor_q = request.args.get("vq", "")
     selected_vendor = (request.args.get("vendor") or "").strip()
     if seller_vendor_scope:
         vendor_q = ""
         selected_vendor = seller_vendor_scope
-    vendor_summary = get_vendor_sales_summary(q=vendor_q, limit=250, vendor_id=seller_vendor_scope) if active_section == "vendedores" else []
+    try:
+        vendor_page = max(1, int(request.args.get("vendor_page") or 1))
+        vendor_detail_page = max(1, int(request.args.get("vendor_detail_page") or 1))
+    except (TypeError, ValueError):
+        vendor_page, vendor_detail_page = 1, 1
+    vendor_page_size = 50
+    vendor_summary, vendor_total = get_vendor_sales_summary(
+        q=vendor_q, limit=vendor_page_size, vendor_id=seller_vendor_scope,
+        offset=(vendor_page - 1) * vendor_page_size, with_count=True,
+    ) if active_section == "vendedores" else ([], 0)
+    vendor_total_pages = max(1, math.ceil(vendor_total / vendor_page_size))
+    if vendor_page > vendor_total_pages and active_section == "vendedores":
+        vendor_page = vendor_total_pages
+        vendor_summary = get_vendor_sales_summary(
+            q=vendor_q, limit=vendor_page_size, vendor_id=seller_vendor_scope,
+            offset=(vendor_page - 1) * vendor_page_size,
+        )
     if not selected_vendor and vendor_summary:
         selected_vendor = vendor_summary[0]["vendedor"]
-    vendor_detail = get_vendor_sales_detail(selected_vendor, limit=120) if selected_vendor and active_section == "vendedores" else []
+    vendor_detail, vendor_detail_total = get_vendor_sales_detail(
+        selected_vendor, limit=vendor_page_size, offset=(vendor_detail_page - 1) * vendor_page_size, with_count=True,
+    ) if selected_vendor and active_section == "vendedores" else ([], 0)
+    vendor_detail_total_pages = max(1, math.ceil(vendor_detail_total / vendor_page_size))
+    if vendor_detail_page > vendor_detail_total_pages and active_section == "vendedores":
+        vendor_detail_page = vendor_detail_total_pages
+        vendor_detail = get_vendor_sales_detail(
+            selected_vendor, limit=vendor_page_size, offset=(vendor_detail_page - 1) * vendor_page_size,
+        )
     vendor_total_sales = sum(int(item.get("total_ventas") or 0) for item in vendor_summary)
     request_q = request.args.get("rq", "")
     request_status = request.args.get("rstatus", "")
     request_command = request.args.get("rcommand", "")
     request_from = request.args.get("rfrom", "")
     request_to = request.args.get("rto", "")
-    all_requests = get_request_items(limit=1000) if active_section == "solicitudes" else []
-    filtered_requests = get_request_items_filtered(
-        q=request_q,
-        status=request_status,
-        command=request_command,
-        date_from=request_from,
-        date_to=request_to,
-        limit=500,
-    ) if active_section == "solicitudes" else []
-    pending_requests = [r for r in all_requests if (r.get("status") or "") == "pending"]
-    recent_requests = [r for r in all_requests if (r.get("status") or "") != "pending"]
-    filtered_pending_requests = [r for r in filtered_requests if (r.get("status") or "") == "pending"]
-    filtered_recent_requests = [r for r in filtered_requests if (r.get("status") or "") != "pending"]
-    request_counts = {
-        "pending": len([r for r in all_requests if (r.get("status") or "") == "pending"]),
-        "resolved": len([r for r in all_requests if (r.get("status") or "") == "resolved"]),
-        "cancelled": len([r for r in all_requests if (r.get("status") or "") == "cancelled"]),
-        "failed": len([r for r in all_requests if (r.get("status") or "") == "failed"]),
-    }
-    request_command_options = sorted({(r.get("command") or "").strip().lower() for r in all_requests if r.get("command")})
+    request_summary = get_request_summary() if active_section == "solicitudes" else {"counts": {}, "commands": []}
+    request_counts = request_summary["counts"]
+    request_command_options = request_summary["commands"]
+    try:
+        pending_page = max(1, int(request.args.get("pending_page") or 1))
+    except (TypeError, ValueError):
+        pending_page = 1
+    try:
+        recent_page = max(1, int(request.args.get("recent_page") or 1))
+    except (TypeError, ValueError):
+        recent_page = 1
+    request_page_size = 50
+    filtered_pending_requests, pending_total = get_request_items_filtered(
+        q=request_q, status=request_status, command=request_command,
+        date_from=request_from, date_to=request_to, limit=request_page_size,
+        offset=(pending_page - 1) * request_page_size, bucket="pending", with_count=True,
+    ) if active_section == "solicitudes" else ([], 0)
+    filtered_recent_requests, recent_total = get_request_items_filtered(
+        q=request_q, status=request_status, command=request_command,
+        date_from=request_from, date_to=request_to, limit=request_page_size,
+        offset=(recent_page - 1) * request_page_size, bucket="recent", with_count=True,
+    ) if active_section == "solicitudes" else ([], 0)
+    pending_total_pages = max(1, math.ceil(pending_total / request_page_size))
+    recent_total_pages = max(1, math.ceil(recent_total / request_page_size))
+    if pending_page > pending_total_pages and active_section == "solicitudes":
+        pending_page = pending_total_pages
+        filtered_pending_requests = get_request_items_filtered(
+            q=request_q, status=request_status, command=request_command,
+            date_from=request_from, date_to=request_to, limit=request_page_size,
+            offset=(pending_page - 1) * request_page_size, bucket="pending",
+        )
+    if recent_page > recent_total_pages and active_section == "solicitudes":
+        recent_page = recent_total_pages
+        filtered_recent_requests = get_request_items_filtered(
+            q=request_q, status=request_status, command=request_command,
+            date_from=request_from, date_to=request_to, limit=request_page_size,
+            offset=(recent_page - 1) * request_page_size, bucket="recent",
+        )
+    pending_requests_total = request_counts.get("pending", 0)
+    recent_requests_total = max(0, sum(request_counts.values()) - pending_requests_total)
     key_q = request.args.get("key_q", "")
     key_tipo = request.args.get("key_tipo", "")
     key_status = request.args.get("key_status", "")
-    key_items = get_key_items(q=key_q, tipo=key_tipo, status=key_status, limit=200) if active_section == "keys" else []
-    key_redemptions = get_key_redemptions(limit=80) if active_section == "keys" else []
-    key_counts = {
-        "total": len(get_key_items(limit=10000)) if active_section == "keys" else 0,
-        "available": len(get_key_items(status="available", limit=10000)) if active_section == "keys" else 0,
-        "used": len(get_key_items(status="used", limit=10000)) if active_section == "keys" else 0,
-        "redemptions": len(key_redemptions),
-    }
+    try:
+        key_page = max(1, int(request.args.get("key_page") or 1))
+        redemption_page = max(1, int(request.args.get("redemption_page") or 1))
+    except (TypeError, ValueError):
+        key_page, redemption_page = 1, 1
+    key_page_size = 50
+    key_items, key_total = get_key_items(
+        q=key_q, tipo=key_tipo, status=key_status, limit=key_page_size,
+        offset=(key_page - 1) * key_page_size, with_count=True,
+    ) if active_section == "keys" else ([], 0)
+    key_total_pages = max(1, math.ceil(key_total / key_page_size))
+    if key_page > key_total_pages and active_section == "keys":
+        key_page = key_total_pages
+        key_items = get_key_items(
+            q=key_q, tipo=key_tipo, status=key_status, limit=key_page_size,
+            offset=(key_page - 1) * key_page_size,
+        )
+    key_metrics = get_key_metrics() if active_section == "keys" else {"total": 0, "available": 0, "used": 0, "redemptions": 0}
+    key_counts = {"total": key_metrics["total"], "available": key_metrics["available"], "used": key_metrics["used"]}
+    key_redemptions, redemption_total = get_key_redemptions(
+        limit=key_page_size, offset=(redemption_page - 1) * key_page_size, with_count=True,
+    ) if active_section == "keys" else ([], 0)
+    redemption_total_pages = max(1, math.ceil(redemption_total / key_page_size))
+    if redemption_page > redemption_total_pages and active_section == "keys":
+        redemption_page = redemption_total_pages
+        key_redemptions = get_key_redemptions(limit=key_page_size, offset=(redemption_page - 1) * key_page_size)
+    key_counts["redemptions"] = key_metrics["redemptions"]
     q = request.args.get("q", "")
     category_filter = request.args.get("category", "")
     status_filter = request.args.get("status", "")
-    filtered_commands = filter_catalog_commands(commands, q=q, category=category_filter, status=status_filter)
+    filtered_commands = (
+        filter_catalog_commands(commands, q=q, category=category_filter, status=status_filter)
+        if active_section == "comandos"
+        else []
+    )
     daily_backups = get_daily_backups(limit=10) if active_section == "sistema" else []
     latest_backup = daily_backups[0] if daily_backups else None
     audit_action = request.args.get("audit_action", "")
@@ -4639,7 +4968,11 @@ def admin_panel():
     except Exception:
         cmd_page = 1
     paged_commands, cmd_page, cmd_total_pages, cmd_total = paginate_items(filtered_commands, cmd_page, per_page=10)
-    error_logs = get_error_logs(limit=50) if active_section in {"resumen", "sistema"} else []
+    error_logs_loaded = active_section not in {"resumen", "sistema"}
+    if active_section in {"resumen", "sistema"}:
+        error_logs, error_logs_loaded = get_error_logs(limit=50, with_status=True)
+    else:
+        error_logs = []
     error_alert = None
     cutoff = now_utc() - timedelta(hours=24)
     for error in error_logs:
@@ -4649,15 +4982,22 @@ def admin_panel():
                 break
         except (TypeError, ValueError):
             continue
-    dashboard = get_dashboard_snapshot(
-        vendor_id=seller_vendor_scope,
-        detailed=active_section == "estadisticas",
-    )
-    if not dashboard["analytics_loaded"]:
-        dashboard["errores_recientes"] = sum(
-            1 for error in error_logs
-            if str(error.get("created_at") or "") >= (now_utc() - timedelta(days=1)).isoformat()
+    if needs_summary or active_section == "estadisticas":
+        dashboard = get_dashboard_snapshot(
+            vendor_id=seller_vendor_scope,
+            detailed=active_section == "estadisticas",
         )
+    else:
+        dashboard = {"analytics_loaded": False, "errores_recientes": 0}
+    if needs_summary:
+        dashboard["error_logs_loaded"] = error_logs_loaded
+        if not error_logs_loaded:
+            dashboard["summary_errors"].append("errores")
+        if error_logs_loaded:
+            dashboard["errores_recientes"] = sum(
+                1 for error in error_logs
+                if str(error.get("created_at") or "") >= (now_utc() - timedelta(days=1)).isoformat()
+            )
     return render_template(
         "admin_panel.html",
         categories=categories,
@@ -4668,12 +5008,18 @@ def admin_panel():
         profile_user_id=profile_user_id,
         user_profile=user_profile,
         vendor_summary=vendor_summary,
+        vendor_total=vendor_total,
+        vendor_page=vendor_page,
+        vendor_total_pages=vendor_total_pages,
         vendor_detail=vendor_detail,
+        vendor_detail_total=vendor_detail_total,
+        vendor_detail_page=vendor_detail_page,
+        vendor_detail_total_pages=vendor_detail_total_pages,
         vendor_total_sales=vendor_total_sales,
         vendor_q=vendor_q,
         selected_vendor=selected_vendor,
         settings=settings,
-        previews=build_panel_previews(settings, buy_packages, commands),
+        previews=build_panel_previews(settings, buy_packages, commands) if needs_summary else {},
         dashboard=dashboard,
         global_q=global_q,
         global_results=global_results,
@@ -4695,6 +5041,9 @@ def admin_panel():
         audit_actor=audit_actor,
         audit_target=audit_target,
         purchases=purchases,
+        purchases_total=purchases_total,
+        purchase_page=purchase_page,
+        purchase_total_pages=purchase_total_pages,
         purchase_user=purchase_user,
         purchase_vendor=purchase_vendor,
         purchase_from=purchase_from,
@@ -4703,6 +5052,9 @@ def admin_panel():
         purchase_status=purchase_status,
         purchase_statuses=sorted(PURCHASE_STATUSES),
         history_rows=history_rows,
+        history_total=history_total,
+        history_page=history_page,
+        history_total_pages=history_total_pages,
         history_user=history_user,
         history_command=history_command,
         history_platform=history_platform,
@@ -4710,10 +5062,18 @@ def admin_panel():
         history_to=history_to,
         history_q=history_q,
         history_commands=history_commands,
-        pending_requests=pending_requests,
-        recent_requests=recent_requests,
+        pending_requests=pending_requests_total,
+        recent_requests=recent_requests_total,
         filtered_pending_requests=filtered_pending_requests,
         filtered_recent_requests=filtered_recent_requests,
+        pending_total=pending_total,
+        recent_total=recent_total,
+        pending_page=pending_page,
+        recent_page=recent_page,
+        pending_total_pages=pending_total_pages,
+        recent_total_pages=recent_total_pages,
+        pending_requests_total=pending_requests_total,
+        recent_requests_total=recent_requests_total,
         request_counts=request_counts,
         request_command_options=request_command_options,
         request_q=request_q,
@@ -4723,7 +5083,13 @@ def admin_panel():
         request_to=request_to,
         request_templates=get_request_templates(),
         key_items=key_items,
+        key_total=key_total,
+        key_page=key_page,
+        key_total_pages=key_total_pages,
         key_redemptions=key_redemptions,
+        redemption_total=redemption_total,
+        redemption_page=redemption_page,
+        redemption_total_pages=redemption_total_pages,
         key_counts=key_counts,
         key_q=key_q,
         key_tipo=key_tipo,
@@ -4731,6 +5097,9 @@ def admin_panel():
         user_q=user_q,
         user_status=user_status,
         user_plan=user_plan,
+        user_page=user_page,
+        user_total_pages=user_total_pages,
+        user_total=user_total,
         q=q,
         category_filter=category_filter,
         status_filter=status_filter,
@@ -4739,6 +5108,7 @@ def admin_panel():
         cmd_total=cmd_total,
         active_section=active_section,
         flash=flash,
+        flash_state=flash_state,
     )
 
 
@@ -6093,11 +6463,60 @@ def internal_admin_errors():
     auth_error = require_internal_access()
     if auth_error:
         return auth_error
+    reference = str(request.args.get("reference") or "").strip().upper()
+    if reference and not re.fullmatch(r"[0-9A-F]{8}", reference):
+        return jsonify({"status": "error", "message": "Referencia inválida"}), 400
     try:
         limit = max(1, min(50, int(request.args.get("limit") or 10)))
     except Exception:
         limit = 10
-    return jsonify({"status": "ok", "data": get_error_logs(limit=limit), "metrics": get_health_metrics().get("errores", {})}), 200
+    return jsonify({
+        "status": "ok",
+        "data": get_error_logs(limit=limit, reference=reference),
+        "metrics": get_health_metrics().get("errores", {}),
+    }), 200
+
+
+@app.route("/internal/admin/worker-error", methods=["POST"])
+def internal_admin_worker_error():
+    auth_error = require_internal_access()
+    if auth_error:
+        return auth_error
+    data = request.get_json(silent=True) or {}
+    reference = str(data.get("reference") or "").strip().upper()
+    if not re.fullmatch(r"[0-9A-F]{8}", reference):
+        return jsonify({"status": "error", "message": "Referencia inválida"}), 400
+    error_type = str(data.get("error_type") or "Exception").strip()
+    stage = str(data.get("stage") or "dispatch").strip()
+    handler = str(data.get("handler") or "unknown").strip()
+    # Runtime logs contain only source locations and type names, never update payloads.
+    frames = str(data.get("traceback") or "")[-6000:]
+    safe_error_type = error_type[:80] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,79}", error_type) else "Exception"
+    safe_stage = stage[:40] if re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", stage) else "dispatch"
+    safe_handler = handler[:100] if re.fullmatch(r"[A-Za-z0-9_.<>-]{1,100}", handler) else "unknown"
+    try:
+        init_requests_db()
+        conn = get_conn(REQUESTS_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO error_logs (path, method, message, traceback, created_at, reference, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"worker/{safe_stage}",
+                safe_handler,
+                f"{safe_error_type} en {safe_handler}",
+                frames,
+                now_iso(),
+                reference,
+                "worker",
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        app.logger.exception("No se pudo registrar el fallo del worker")
+        return jsonify({"status": "error", "message": "No se pudo registrar el error"}), 500
+    return jsonify({"status": "ok", "reference": reference}), 200
 
 
 @app.route("/admin/export", methods=["GET"])
@@ -6345,7 +6764,7 @@ def panel_login():
     return render_template("admin_login.html", error=error)
 
 
-@app.route("/admin/logout", methods=["GET"])
+@app.route("/admin/logout", methods=["POST"])
 def panel_logout():
     log_audit_event("panel.logout", session.get("panel_user") or PANEL_USER, "logout")
     session.pop("panel_auth", None)

@@ -1,0 +1,248 @@
+      {% if active_section == 'solicitudes' %}
+      <div class="stack">
+      <div class="card">
+        <h2>Vista de solicitudes</h2>
+        <div class="toolbar-right u-mb-12">
+          <a href="{{ url_for('admin_export_requests_csv', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to) }}">CSV</a>
+          <a href="{{ url_for('admin_export_requests_json', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to) }}">JSON</a>
+        </div>
+        <form method="get" action="{{ url_for('admin_panel') }}" class="inline u-mb-14">
+          <input type="hidden" name="section" value="solicitudes">
+          <input name="rq" value="{{ request_q }}" placeholder="Buscar por id, usuario, comando o nota">
+          <select name="rstatus">
+            <option value="">Todos los estados</option>
+            <option value="pending" {% if request_status == 'pending' %}selected{% endif %}>Pendientes</option>
+            <option value="resolved" {% if request_status == 'resolved' %}selected{% endif %}>Resueltas</option>
+            <option value="cancelled" {% if request_status == 'cancelled' %}selected{% endif %}>Canceladas</option>
+            <option value="failed" {% if request_status == 'failed' %}selected{% endif %}>Fallidas</option>
+          </select>
+          <select name="rcommand">
+            <option value="">Todos los comandos</option>
+            {% for slug in request_command_options %}
+            <option value="{{ slug }}" {% if request_command == slug %}selected{% endif %}>/{{ slug }}</option>
+            {% endfor %}
+          </select>
+          <input name="rfrom" type="date" value="{{ request_from }}">
+          <input name="rto" type="date" value="{{ request_to }}">
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="summary">
+          <div class="metric"><span class="pill">Pendientes</span><h3>{{ request_counts.pending }}</h3><div class="small">Sin resolver</div></div>
+          <div class="metric"><span class="pill">Resueltas</span><h3>{{ request_counts.resolved }}</h3><div class="small">Atendidas con envío</div></div>
+          <div class="metric"><span class="pill">Canceladas</span><h3>{{ request_counts.cancelled }}</h3><div class="small">Cerradas sin cobro</div></div>
+          <div class="metric"><span class="pill">Fallidas</span><h3>{{ request_counts.failed }}</h3><div class="small">Sin resultados o error</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div>
+            <h2>Solicitudes pendientes</h2>
+            <p class="small">Aquí ves lo que sigue sin respuesta en el flujo manual del bot.</p>
+          </div>
+          <div class="pill">{{ pending_requests }} pendientes</div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Costo</th><th>Estado</th><th>Referencia admin</th><th>Acción</th></tr></thead>
+          <tbody>
+            {% if filtered_pending_requests %}
+              {% for req in filtered_pending_requests %}
+              <tr>
+                <td><strong>#{{ req.id }}</strong></td>
+                <td>
+                  <strong>{% if req.username %}@{{ req.username }}{% else %}{{ req.user_id }}{% endif %}</strong>
+                  <div class="small">ID: {{ req.user_id }}</div>
+                </td>
+                <td>
+                  /{{ req.command }}<div class="small">{{ req.payload or '—' }}</div>
+                  {% if req.attachment_file_id %}
+                  <div class="small"><a href="{{ url_for('admin_request_attachment', request_id=req.id) }}" target="_blank">Ver adjunto{% if req.attachment_type %}: {{ req.attachment_type }}{% endif %}</a></div>
+                  {% endif %}
+                </td>
+                <td>{{ req.cost }}</td>
+                <td><span class="badge {% if req.status == 'pending' %}off{% else %}ok{% endif %}">{{ req.status }}</span><div class="small">{{ req.created_at or '—' }}</div></td>
+                <td>{{ req.admin_msg_id or '—' }}</td>
+                <td>
+                  <details class="command-edit">
+                    <summary>Atender</summary>
+                  <form method="post" action="{{ url_for('admin_request_action') }}" class="stack">
+                    <input type="hidden" name="request_id" value="{{ req.id }}">
+                    <input type="hidden" name="rq" value="{{ request_q }}">
+                    <input type="hidden" name="rstatus" value="{{ request_status }}">
+                    <input type="hidden" name="rcommand" value="{{ request_command }}">
+                    <input type="hidden" name="rfrom" value="{{ request_from }}">
+                    <input type="hidden" name="rto" value="{{ request_to }}">
+                    <input name="note" placeholder="Nota interna">
+                    <div class="inline">
+                      <select name="template_key">
+                        <option value="">Plantilla rápida</option>
+                        <option disabled>Globales</option>
+                        {% for tpl in request_templates %}
+                        {% if not tpl.command %}
+                        <option value="{{ tpl.key }}">{{ tpl.key }}{% if tpl.billable %} · cobra{% endif %}</option>
+                        {% endif %}
+                        {% endfor %}
+                        <option disabled>Para /{{ req.command }}</option>
+                        {% for tpl in request_templates %}
+                        {% if tpl.command == req.command %}
+                        <option value="{{ tpl.key }}">{{ tpl.key }}{% if tpl.billable %} · cobra{% endif %}</option>
+                        {% endif %}
+                        {% endfor %}
+                      </select>
+                      <button type="submit" name="action" value="template">Enviar plantilla</button>
+                    </div>
+                    <button class="secondary" type="submit" name="action" value="template_resolve">Enviar plantilla y resolver</button>
+                    <div class="inline">
+                      <button type="submit" name="action" value="resolve">Resolver</button>
+                      <button type="submit" name="action" value="close" data-confirm="¿Cerrar esta solicitud sin cobrar?">Cerrar</button>
+                      <button type="submit" name="action" value="fail" data-confirm="¿Marcar esta solicitud como fallida?">Fallida</button>
+                    </div>
+                  </form>
+                  </details>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="7">No hay solicitudes pendientes.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div class="small">Mostrando {{ filtered_pending_requests|length }} de {{ pending_total }} pendientes. Página {{ pending_page }}/{{ pending_total_pages }}</div>
+          <div>
+            {% if pending_page > 1 %}<a href="{{ url_for('admin_panel', section='solicitudes', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to, pending_page=pending_page-1, recent_page=recent_page) }}">Anterior</a>{% endif %}
+            {% if pending_page < pending_total_pages %}<a href="{{ url_for('admin_panel', section='solicitudes', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to, pending_page=pending_page+1, recent_page=recent_page) }}" class="u-ml-12">Siguiente</a>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <div>
+            <h2>Historial reciente</h2>
+            <p class="small">Resueltas, canceladas o fallidas con nota y fecha de cierre.</p>
+          </div>
+          <div class="pill">{{ recent_requests }} registros</div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>Usuario</th><th>Comando</th><th>Estado</th><th>Nota</th><th>Cierre</th><th>Acción</th></tr></thead>
+          <tbody>
+            {% if filtered_recent_requests %}
+              {% for req in filtered_recent_requests %}
+              <tr>
+                <td><strong>#{{ req.id }}</strong></td>
+                <td>
+                  <strong>{% if req.username %}@{{ req.username }}{% else %}{{ req.user_id }}{% endif %}</strong>
+                  <div class="small">ID: {{ req.user_id }}</div>
+                </td>
+                <td>
+                  /{{ req.command }}<div class="small">{{ req.payload or '—' }}</div>
+                  {% if req.attachment_file_id %}
+                  <div class="small"><a href="{{ url_for('admin_request_attachment', request_id=req.id) }}" target="_blank">Ver adjunto{% if req.attachment_type %}: {{ req.attachment_type }}{% endif %}</a></div>
+                  {% endif %}
+                </td>
+                <td><span class="badge {% if req.status == 'resolved' %}ok{% elif req.status == 'pending' %}off{% else %}pill{% endif %}">{{ req.status }}</span>{% if req.status == 'delivery_uncertain' %}<div class="small">Verifica Telegram antes de reintentar.</div>{% endif %}</td>
+                <td>
+                  {% if req.message_history %}
+                  <details><summary>Historial ({{ req.message_history|length }})</summary>
+                    {% for item in req.message_history %}
+                    <div class="u-prewrap u-mt-8"><strong>{{ item.author_label }} · {{ item.kind }}</strong><br>{{ item.at }}<br>{{ item.text }}</div>
+                    {% endfor %}
+                  </details>
+                  {% else %}—{% endif %}
+                </td>
+                <td>{{ req.resolved_at or '—' }}<div class="small">Admin: {{ req.resolved_by or '—' }}</div></td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_request_action') }}">
+                    <input type="hidden" name="request_id" value="{{ req.id }}">
+                    <input type="hidden" name="rq" value="{{ request_q }}">
+                    <input type="hidden" name="rstatus" value="{{ request_status }}">
+                    <input type="hidden" name="rcommand" value="{{ request_command }}">
+                    <input type="hidden" name="rfrom" value="{{ request_from }}">
+                    <input type="hidden" name="rto" value="{{ request_to }}">
+                    {% if req.status == 'delivery_uncertain' %}
+                    <button type="submit" name="action" value="confirm_delivery" data-confirm="¿Verificaste en el chat que la entrega sí llegó? Esto cerrará la solicitud sin enviar otro mensaje.">Confirmar que llegó</button>
+                    <button class="secondary" type="submit" name="action" value="retry_delivery" data-confirm="Confirma primero que el mensaje no llegó. Esto reabrirá la solicitud para permitir otro envío.">No llegó; permitir reintento</button>
+                    {% else %}
+                    <button type="submit" name="action" value="reopen">Reabrir</button>
+                    {% endif %}
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="7">No hay historial todavía.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div class="small">Mostrando {{ filtered_recent_requests|length }} de {{ recent_total }} registros. Página {{ recent_page }}/{{ recent_total_pages }}</div>
+          <div>
+            {% if recent_page > 1 %}<a href="{{ url_for('admin_panel', section='solicitudes', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to, pending_page=pending_page, recent_page=recent_page-1) }}">Anterior</a>{% endif %}
+            {% if recent_page < recent_total_pages %}<a href="{{ url_for('admin_panel', section='solicitudes', rq=request_q, rstatus=request_status, rcommand=request_command, rfrom=request_from, rto=request_to, pending_page=pending_page, recent_page=recent_page+1) }}" class="u-ml-12">Siguiente</a>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Plantillas rápidas</h2>
+        <div class="three">
+          <div class="mini-card"><strong>/templates</strong><div class="small">Lista las plantillas disponibles en Telegram.</div></div>
+          <div class="mini-card"><strong>/rquick 15 nodata</strong><div class="small">Responde usando plantilla rápida.</div></div>
+          <div class="mini-card"><strong>/close 15 motivo</strong><div class="small">Cierra sin cobrar.</div></div>
+          <div class="mini-card"><strong>/fail 15 motivo</strong><div class="small">Marca fallida sin cobrar.</div></div>
+          <div class="mini-card"><strong>/pending</strong><div class="small">Ver pendientes recientes en Telegram.</div></div>
+          <div class="mini-card"><strong>/requestlog 20</strong><div class="small">Historial rápido desde Telegram.</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Editar plantillas</h2>
+        <form method="post" action="{{ url_for('admin_save_request_template') }}" class="stack u-mb-14">
+          <div class="inline">
+            <input name="key" placeholder="clave, ej. completado_nm" required>
+            <select name="command">
+              <option value="">Global para todos</option>
+              {% for slug in request_command_options %}
+              <option value="{{ slug }}">Solo /{{ slug }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="inline">
+            <select name="billable">
+              <option value="0">Sin cobro</option>
+              <option value="1">Con cobro</option>
+            </select>
+          </div>
+          <textarea name="text" placeholder="Texto de la plantilla" required></textarea>
+          <button type="submit">Crear plantilla</button>
+        </form>
+        <table>
+          <thead><tr><th>Clave</th><th>Comando</th><th>Texto</th><th>Cobro</th><th>Guardar</th></tr></thead>
+          <tbody>
+            {% for tpl in request_templates %}
+            <tr>
+              <td><strong>{{ tpl.key }}</strong></td>
+              <td>
+                <select name="command" form="tpl-{{ tpl.key }}">
+                  <option value="" {% if not tpl.command %}selected{% endif %}>Global</option>
+                  {% for slug in request_command_options %}
+                  <option value="{{ slug }}" {% if tpl.command == slug %}selected{% endif %}>/{{ slug }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                <form id="tpl-{{ tpl.key }}" method="post" action="{{ url_for('admin_save_request_template') }}">
+                  <input type="hidden" name="key" value="{{ tpl.key }}">
+                  <textarea name="text" required>{{ tpl.text }}</textarea>
+              </td>
+              <td>
+                  <select name="billable">
+                    <option value="0" {% if not tpl.billable %}selected{% endif %}>Sin cobro</option>
+                    <option value="1" {% if tpl.billable %}selected{% endif %}>Con cobro</option>
+                  </select>
+              </td>
+              <td><button type="submit">Guardar</button></form></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      {% endif %}

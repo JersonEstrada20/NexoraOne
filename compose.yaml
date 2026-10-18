@@ -7,7 +7,7 @@ services:
       DB_PATH: /data/bot.db
       NEXORA_DATA_DIR: /data
       NEXORA_API_BASE: http://web:8080
-      NEXORA_PANEL_URL: ${NEXORA_PANEL_URL:-https://members-sacrifice-criteria-grip.trycloudflare.com/admin/panel}
+      NEXORA_PANEL_URL: ${NEXORA_PANEL_URL:-}
     volumes:
       - ./app/data:/data
     depends_on:

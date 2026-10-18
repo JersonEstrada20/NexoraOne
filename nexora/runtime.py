@@ -17,6 +17,7 @@ PUBLIC = {"buy": buy.buy_command, "compras": compras.compras_command,
 ADMIN = {name: getattr(admin_ops, name + "_command") for name in
          ("setcred", "cred", "uncred", "setsub", "sub", "unsub", "setrol", "setantispam")}
 ADMIN.update({"dm": admin_tools.dm_command, "user": admin_tools.user_command,
+              "solicitudes": admin_requests.pending_requests_command,
               "ventas": admin_tools.ventas_command, "errores": admin_tools.errores_command,
               "global": broadcast.global_command, "genkey": genkey.genkey,
               "keyslog": genkey.keyslog, "keysinfo": genkey.keysinfo,
@@ -34,7 +35,8 @@ ACTIONS = {"catalog": cmds.cmds_command, "buy": buy.buy_command, "account": me.m
            "web": system_ops.panel_command, "health": system_ops.status_command,
            "setup": setup.setup_command}
 CALLBACKS = {"cmds_": cmds.cmds_callback, "buy:": buy.buy_callback,
-             "global_": broadcast.global_callback, "adminreq:": admin_requests.request_buttons_callback,
+              "global_": broadcast.global_callback, "admintool:": admin_tools.admin_tools_callback,
+              "adminreq:": admin_requests.request_buttons_callback,
              "adminmenu:": helpadmin.admin_menu_callback}
 
 
@@ -79,7 +81,8 @@ class ServiceRuntime:
         if hasattr(event, "data") and hasattr(event, "message"):
             try:
                 await event.answer(
-                    f"No se pudo completar la operación. Referencia: {reference}.",
+                    f"No se pudo confirmar la operación. Referencia: {reference}. "
+                    "Revisa si se aplicó antes de repetirla.",
                     show_alert=True,
                 )
                 return
@@ -97,6 +100,25 @@ class ServiceRuntime:
                 )
             except Exception as exc:
                 self.log_failure("No se pudo responder el fallo", reference, exc)
+
+    async def persist_failure(self, reference, error, stage, handler=None):
+        """Store a searchable, payload-free worker error record in the API service."""
+        try:
+            frames = "".join(traceback.format_list(traceback.extract_tb(error.__traceback__)))
+            await fetch_api_json_async(
+                "/internal/admin/worker-error",
+                timeout=5,
+                method="POST",
+                payload={
+                    "reference": reference,
+                    "stage": stage,
+                    "handler": getattr(handler, "__name__", "unknown"),
+                    "error_type": type(error).__name__,
+                    "traceback": frames[-6000:],
+                },
+            )
+        except Exception:
+            logging.warning("No se pudo sincronizar la referencia de error %s", reference)
 
     async def invoke(self, event, action=None):
         if not self.application:
@@ -144,11 +166,12 @@ class ServiceRuntime:
                 reference,
                 exc,
             )
+            await self.persist_failure(reference, exc, "prepare_event")
             await self.report_failure(event, reference)
             return
         privileged = (action in {"admin", "web", "health", "setup"}
                       or (not is_callback and not action and command in ADMIN)
-                      or (is_callback and action is None and event.data.startswith(("global_", "adminreq:", "adminmenu:"))))
+                      or (is_callback and action is None and event.data.startswith(("global_", "admintool:", "adminreq:", "adminmenu:"))))
         if privileged and event.from_user.id != OWNER_USER_ID:
             return
         if not action and not is_callback and command not in ADMIN:
@@ -163,6 +186,7 @@ class ServiceRuntime:
         except Exception as exc:
             reference = secrets.token_hex(4).upper()
             self.log_failure("Error en módulo de servicios", reference, exc, handler)
+            await self.persist_failure(reference, exc, "handler", handler)
             await self.report_failure(event, reference, update)
 
 

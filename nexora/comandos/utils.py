@@ -68,18 +68,26 @@ def api_url(path: str) -> str:
 
 def configured_admin_ids(raw=None) -> set[int]:
     if raw is None:
-        raw = (
-            os.environ.get("NEXORA_ADMIN_ID")
-            or os.environ.get("SPIDERSYN_ADMIN_ID")
-            or os.environ.get("ADMIN_ID")
-            or CFG.get("ADMIN_ID")
-            or "7454664711"
+        candidates = (
+            os.environ.get("NEXORA_ADMIN_ID"),
+            os.environ.get("SPIDERSYN_ADMIN_ID"),
+            os.environ.get("ADMIN_ID"),
+            CFG.get("ADMIN_ID"),
+            os.environ.get("OWNER_USER_ID"),
+            os.environ.get("NEXORA_OWNER_ID"),
         )
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            parsed = configured_admin_ids(candidate)
+            if parsed:
+                return parsed
+        return set()
     if isinstance(raw, Iterable) and not isinstance(raw, (str, bytes, dict)):
         values = raw
     else:
         values = str(raw or "").replace(",", " ").split()
-    return {int(value) for value in values if str(value).strip().isdigit()}
+    return {int(value) for value in values if str(value).strip().isdigit() and int(value) > 0}
 
 
 def is_admin_id(user_id: int | str | None) -> bool:
@@ -157,6 +165,10 @@ async def fetch_api_json_async(path: str, timeout: int = 20, method: str = "GET"
         method=method,
         payload=payload,
     )
+
+
+async def verificar_usuario_async(id_tg: str):
+    return await asyncio.to_thread(verificar_usuario, id_tg)
 
 
 def verificar_usuario(id_tg: str):
@@ -360,6 +372,10 @@ def get_command_runtime_config(command_slug: str, default_cost: int = 1):
     }
 
 
+async def get_command_runtime_config_async(command_slug: str, default_cost: int = 1):
+    return await asyncio.to_thread(get_command_runtime_config, command_slug, default_cost)
+
+
 def descontar_creditos(id_tg: str, cantidad: int = 1, operation_id: str | None = None):
     if not API_BASE:
         return False, {}
@@ -377,3 +393,7 @@ def descontar_creditos(id_tg: str, cantidad: int = 1, operation_id: str | None =
     if st != 200:
         return False, js if isinstance(js, dict) else {}
     return True, js.get("data", {}) or {}
+
+
+async def descontar_creditos_async(id_tg: str, cantidad: int = 1, operation_id: str | None = None):
+    return await asyncio.to_thread(descontar_creditos, id_tg, cantidad, operation_id)

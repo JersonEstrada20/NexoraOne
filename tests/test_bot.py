@@ -1,5 +1,6 @@
 import json
 import importlib
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -53,7 +54,7 @@ class MenuTests(unittest.TestCase):
     def test_home_has_suggestion_button(self):
         callbacks = {
             button.callback_data
-            for row in menu_keyboard().inline_keyboard
+            for row in menu_keyboard("general").inline_keyboard
             for button in row
         }
         self.assertIn("suggest:start", callbacks)
@@ -68,7 +69,7 @@ class MenuTests(unittest.TestCase):
 
     def test_admin_tools_are_reached_from_the_single_menu(self):
         callbacks = {button.callback_data for row in menu_keyboard("settings").inline_keyboard for button in row}
-        self.assertIn("unified:0:paneladmin", callbacks)
+        self.assertIn("setup:home", callbacks)
         self.assertNotIn("panel:home", callbacks)
         self.assertNotIn("center:home", callbacks)
 
@@ -108,8 +109,10 @@ class ModuleTests(unittest.TestCase):
 
 
 class BackupTests(unittest.TestCase):
-    def test_owner_channel_is_the_only_default_destination(self):
-        self.assertEqual(-1004334720154, BACKUP_CHAT_ID)
+    def test_backup_destination_comes_from_environment(self):
+        configured = (os.getenv("BACKUP_CHAT_ID") or "").strip()
+        expected = int(configured) if configured.lstrip("-").isdigit() and int(configured) else None
+        self.assertEqual(expected, BACKUP_CHAT_ID)
 
     def test_backup_creates_searchable_group_index(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,7 +141,8 @@ class BackupTests(unittest.TestCase):
 
 class MaintenanceTests(unittest.TestCase):
     def test_owner_id_is_configured(self):
-        self.assertEqual(7454664711, OWNER_USER_ID)
+        self.assertIsInstance(OWNER_USER_ID, int)
+        self.assertGreaterEqual(OWNER_USER_ID, 0)
         from app.handlers import maintenance
         self.assertEqual(OWNER_USER_ID, maintenance.OWNER_USER_ID)
 
@@ -249,13 +253,13 @@ class DownloadAccessTests(unittest.IsolatedAsyncioTestCase):
             connection.execute("INSERT INTO download_exemptions VALUES (999)")
             connection.commit()
             connection.close()
-            with patch.object(media, "DB_PATH", db_path):
+            with patch.object(media, "DB_PATH", db_path), patch.object(media, "OWNER_USER_ID", 7454664711):
                 self.assertTrue(await media._has_free_downloads(7454664711))
                 self.assertTrue(await media._has_free_downloads(999))
                 self.assertFalse(await media._has_free_downloads(123))
 
     async def test_owner_is_unlimited_even_without_database_access(self):
-        with patch.object(media, "DB_PATH", "Z:/ruta/que/no/existe/bot.db"):
+        with patch.object(media, "DB_PATH", "Z:/ruta/que/no/existe/bot.db"), patch.object(media, "OWNER_USER_ID", 7454664711):
             self.assertTrue(await media._has_free_downloads(7454664711))
 
     async def test_history_records_cannot_be_repeated_by_another_user(self):

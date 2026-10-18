@@ -10,8 +10,8 @@ from nexora.comandos.admin_requests import create_request
 from nexora.comandos.utils import (
     account_access_message,
     configured_admin_ids,
-    get_command_runtime_config,
-    verificar_usuario,
+    get_command_runtime_config_async,
+    verificar_usuario_async,
 )
 
 CONFIG_FILE_PATH = "config.json"
@@ -269,12 +269,12 @@ async def handle_request_command(
         await msg.reply_text(validation_error, reply_to_message_id=msg.message_id)
         return
 
-    valido, info_usuario = verificar_usuario(str(user.id))
+    valido, info_usuario = await verificar_usuario_async(str(user.id))
     if not valido:
         await msg.reply_text(account_access_message(info_usuario))
         return
 
-    command_cfg = get_command_runtime_config(command, default_cost)
+    command_cfg = await get_command_runtime_config_async(command, default_cost)
     if not command_cfg.get("is_active", True):
         await msg.reply_text("⚠️ Este comando está desactivado temporalmente.")
         return

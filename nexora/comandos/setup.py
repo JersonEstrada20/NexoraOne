@@ -4,9 +4,10 @@ import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from nexora.comandos.utils import API_BASE, INTERNAL_API_KEY, configured_admin_ids, fetch_api_json
+from app.config import OWNER_USER_ID
+from nexora.comandos.utils import API_BASE, INTERNAL_API_KEY, configured_admin_ids, fetch_api_json_async
 
-OWNER_ID = 7454664711
+OWNER_ID = OWNER_USER_ID
 
 
 def _panel_url() -> str:
@@ -33,7 +34,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     health_status = "sin API"
     runtime = {}
     if API_BASE:
-        st, data = fetch_api_json("/health", timeout=15)
+        st, data = await fetch_api_json_async("/health", timeout=15)
         health_status = f"{st} · {(data or {}).get('status', 'error')}"
         runtime = (data or {}).get("runtime") or {}
 
@@ -59,8 +60,10 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = []
     if panel:
-        buttons.append([InlineKeyboardButton("Abrir ajustes", url=f"{panel}?section=ajustes")])
-        buttons.append([InlineKeyboardButton("Ver sistema", url=f"{panel}?section=sistema")])
+        buttons.append([
+            InlineKeyboardButton("⚙️ Abrir ajustes", url=f"{panel}?section=ajustes"),
+            InlineKeyboardButton("📊 Ver sistema", url=f"{panel}?section=sistema"),
+        ])
     await msg.reply_text(
         "\n".join(lines),
         parse_mode="HTML",

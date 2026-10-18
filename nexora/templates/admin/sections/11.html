@@ -1,0 +1,117 @@
+      {% if active_section == 'buy' or active_section == 'ajustes' %}
+      <div class="section-grid">
+        {% if active_section == 'buy' %}
+        <div class="card" id="sec-buy">
+          <h2>Paquetes de /buy</h2>
+          <form method="post" action="{{ url_for('admin_save_buy_package') }}">
+            <div class="inline">
+              <div>
+                <label>Tipo</label>
+                <select name="kind">
+                  <option value="credits">Créditos</option>
+                  <option value="days">Días</option>
+                </select>
+              </div>
+              <div>
+                <label>Grupo</label>
+                <input name="group_slug" placeholder="premium">
+              </div>
+            </div>
+            <div class="inline">
+              <div>
+                <label>Badge</label>
+                <input name="badge" placeholder="💎">
+              </div>
+              <div>
+                <label>Título</label>
+                <input name="title" placeholder="PREMIUM">
+              </div>
+            </div>
+            <div class="inline">
+              <div>
+                <label>Subtítulo</label>
+                <input name="subtitle" placeholder="5's">
+              </div>
+              <div>
+                <label>Orden</label>
+                <input name="sort_order" type="number" value="0">
+              </div>
+            </div>
+            <label>Línea</label>
+            <input name="line_text" placeholder="1500 + 200 Creditos ➩ 100 Soles">
+            <label>Estado</label>
+            <select name="is_active">
+              <option value="1">Activo</option>
+              <option value="0">Inactivo</option>
+            </select>
+            <button class="secondary" type="submit">Agregar paquete</button>
+          </form>
+          <table>
+            <thead><tr><th>Tipo</th><th>Grupo</th><th>Línea</th><th>Estado</th><th>Editar</th></tr></thead>
+            <tbody>
+              {% for pkg in buy_packages %}
+              <tr>
+                <td>{{ 'Créditos' if pkg.kind == 'credits' else 'Días' }}</td>
+                <td><strong>{{ pkg.badge }} {{ pkg.title }}</strong><div class="small">{{ pkg.subtitle or '—' }}</div></td>
+                <td>{{ pkg.line_text }}</td>
+                <td>{% if pkg.is_active %}<span class="badge ok">Activo</span>{% else %}<span class="badge off">Inactivo</span>{% endif %}</td>
+                <td>
+                  <form method="post" action="{{ url_for('admin_save_buy_package') }}">
+                    <input type="hidden" name="id" value="{{ pkg.id }}">
+                    <div class="inline">
+                      <select name="kind">
+                        <option value="credits" {% if pkg.kind == 'credits' %}selected{% endif %}>Créditos</option>
+                        <option value="days" {% if pkg.kind == 'days' %}selected{% endif %}>Días</option>
+                      </select>
+                      <input name="group_slug" value="{{ pkg.group_slug }}">
+                    </div>
+                    <div class="inline">
+                      <input name="badge" value="{{ pkg.badge }}">
+                      <input name="title" value="{{ pkg.title }}">
+                    </div>
+                    <div class="inline">
+                      <input name="subtitle" value="{{ pkg.subtitle or '' }}">
+                      <input name="sort_order" type="number" value="{{ pkg.sort_order }}">
+                    </div>
+                    <input name="line_text" value="{{ pkg.line_text }}">
+                    <select name="is_active">
+                      <option value="1" {% if pkg.is_active %}selected{% endif %}>Activo</option>
+                      <option value="0" {% if not pkg.is_active %}selected{% endif %}>Inactivo</option>
+                    </select>
+                    <button type="submit">Guardar</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+        {% if active_section == 'ajustes' %}
+        <div class="card" id="sec-ajustes">
+          <h2>Ajustes Visuales y Botones</h2>
+          <p class="small">Controla desde aquí imágenes y enlaces que usan `/start`, `/buy`, `/cmds`, `/admin` y otras pantallas.</p>
+          <div class="three">
+            {% for key in ['BOT_NAME','BT_OWNER','OWNER_LINK','BT_CANAL','CANAL_LINK','BT_GRUPO','GRUPO_LINK','BT_SELLER','SELLER_LINK','BT_SELLER1','SELLER_LINK1','BT_SELLER2','SELLER_LINK2','BT_SELLER3','SELLER_LINK3','FT_BUY','FT_CMDS','FT_CMDSADMIN','FT_START'] %}
+            <div class="mini-card">
+              <form method="post" action="{{ url_for('admin_save_setting') }}">
+                <input type="hidden" name="key" value="{{ key }}">
+                <label>{{ key }}</label>
+                <input name="value" value="{{ settings.get(key, '') }}" placeholder="{{ key }}">
+                <button type="submit">Guardar</button>
+              </form>
+              {% if key in ['FT_BUY','FT_CMDS','FT_CMDSADMIN','FT_START'] %}
+              <form method="post" action="{{ url_for('admin_upload_visual_setting') }}" enctype="multipart/form-data" class="u-mt-10">
+                <input type="hidden" name="key" value="{{ key }}">
+                <label>Subir imagen directa</label>
+                <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" required>
+                <button type="submit" class="secondary">Subir y usar</button>
+              </form>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        </div>
+        {% endif %}

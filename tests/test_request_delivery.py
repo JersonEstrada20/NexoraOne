@@ -66,13 +66,13 @@ class UncertainDeliveryTests(unittest.IsolatedAsyncioTestCase):
         conn.close()
         return request_id, row
 
-    def test_uncertain_delivery_blocks_request_and_records_message_and_charge(self):
+    async def test_uncertain_delivery_blocks_request_and_records_message_and_charge(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             admin_requests, "DB_FILE", str(Path(directory) / "requests.db")
         ):
             request_id, row = self._create_request(admin_requests.DB_FILE)
 
-            admin_requests._mark_delivery_uncertain(row, "mensaje enviado", author_id=99, charged=1)
+            await admin_requests._mark_delivery_uncertain(row, "mensaje enviado", author_id=99, charged=1)
 
             conn = sqlite3.connect(admin_requests.DB_FILE)
             status, charged, history = conn.execute(
@@ -103,31 +103,31 @@ class UncertainDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("delivery_uncertain", status)
 
 
-class RequestChargeTests(unittest.TestCase):
-    def test_failed_debit_blocks_billable_response(self):
-        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
-             patch('nexora.comandos.utils.descontar_creditos', return_value=(False, {})) as debit:
+class RequestChargeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_debit_blocks_billable_response(self):
+        with patch('nexora.comandos.utils.verificar_usuario_async', new=AsyncMock(return_value=(True, {'ilimitado': False}))), \
+             patch('nexora.comandos.utils.descontar_creditos_async', new=AsyncMock(return_value=(False, {}))) as debit:
             with self.assertRaises(RequestChargeError):
-                _maybe_charge_request(None, 42, 123, 3, 0)
-        debit.assert_called_once_with('123', 3, operation_id='request:42:billable-response')
+                await _maybe_charge_request(None, 42, 123, 3, 0)
+        debit.assert_awaited_once_with('123', 3, operation_id='request:42:billable-response')
 
-    def test_insufficient_balance_has_clear_reason(self):
-        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
-             patch('nexora.comandos.utils.descontar_creditos', return_value=(
+    async def test_insufficient_balance_has_clear_reason(self):
+        with patch('nexora.comandos.utils.verificar_usuario_async', new=AsyncMock(return_value=(True, {'ilimitado': False}))), \
+             patch('nexora.comandos.utils.descontar_creditos_async', new=AsyncMock(return_value=(
                  False, {'message': 'Créditos insuficientes para confirmar el descuento'}
-             )):
+             ))):
             with self.assertRaisesRegex(RequestChargeError, 'créditos suficientes'):
-                _maybe_charge_request(None, 42, 123, 3, 0)
+                await _maybe_charge_request(None, 42, 123, 3, 0)
 
-    def test_successful_debit_uses_persistent_operation_key(self):
-        with patch('nexora.comandos.utils.verificar_usuario', return_value=(True, {'ilimitado': False})), \
-             patch('nexora.comandos.utils.descontar_creditos', return_value=(True, {})) as debit:
-            self.assertEqual(_maybe_charge_request(None, 42, 123, 3, 0), 1)
-        debit.assert_called_once_with('123', 3, operation_id='request:42:billable-response')
+    async def test_successful_debit_uses_persistent_operation_key(self):
+        with patch('nexora.comandos.utils.verificar_usuario_async', new=AsyncMock(return_value=(True, {'ilimitado': False}))), \
+             patch('nexora.comandos.utils.descontar_creditos_async', new=AsyncMock(return_value=(True, {}))) as debit:
+            self.assertEqual(await _maybe_charge_request(None, 42, 123, 3, 0), 1)
+        debit.assert_awaited_once_with('123', 3, operation_id='request:42:billable-response')
 
-    def test_already_charged_request_does_not_call_credit_api(self):
-        with patch('nexora.comandos.utils.verificar_usuario') as verify, \
-             patch('nexora.comandos.utils.descontar_creditos') as debit:
-            self.assertEqual(_maybe_charge_request(None, 42, 123, 3, 1), 1)
-        verify.assert_not_called()
-        debit.assert_not_called()
+    async def test_already_charged_request_does_not_call_credit_api(self):
+        with patch('nexora.comandos.utils.verificar_usuario_async', new=AsyncMock()) as verify, \
+             patch('nexora.comandos.utils.descontar_creditos_async', new=AsyncMock()) as debit:
+            self.assertEqual(await _maybe_charge_request(None, 42, 123, 3, 1), 1)
+        verify.assert_not_awaited()
+        debit.assert_not_awaited()
