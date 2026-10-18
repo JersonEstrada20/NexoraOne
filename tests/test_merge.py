@@ -19,7 +19,8 @@ class CommandContract(unittest.TestCase):
                             entries.setdefault(arg.value, []).append(str(path))
         for name in ('register','perfil','paneladmin','backup','historial','ban','unban','bang','unbang','bangg','unbangg'):
             self.assertEqual(len(entries.get(name,[])),1,name)
-        for name in ('reg','registrarme','rg','cartera','minivel','nivel','panel','admin','helpadmin','cmdsadmin','backupnow','cmds'):
+        self.assertEqual(entries.get('cmds'), ['app/handlers/unified.py'])
+        for name in ('reg','registrarme','rg','cartera','minivel','nivel','panel','admin','helpadmin','cmdsadmin','backupnow'):
             self.assertNotIn(name, entries)
         self.assertFalse(set(entries) & set(COMMANDS), 'Service command collision')
 

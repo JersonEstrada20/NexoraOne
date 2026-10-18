@@ -25,9 +25,9 @@ class StatusReportTests(unittest.IsolatedAsyncioTestCase):
         fetch.assert_awaited_once_with('/health', timeout=15)
         update.effective_message.reply_text.assert_awaited_once()
         text = update.effective_message.reply_text.await_args.args[0]
-        for section in ('STATUS', 'Usuarios', 'Keys', 'Solicitudes', 'Catálogo', 'Errores', 'test.db'):
+        for section in ('Estado de NEXORA ONE', 'Servicios', 'Almacenamiento', 'Actividad', 'Usuarios', 'Keys', 'Solicitudes', 'Catálogo', 'Errores', 'test.db'):
             self.assertIn(section, text)
-        self.assertIn('Key <code>OK</code>', text)
+        self.assertIn('Clave OK', text)
         self.assertNotIn('test-secret-not-for-output', text)
 
     async def test_missing_key_is_reported_without_name_error(self):
@@ -37,7 +37,7 @@ class StatusReportTests(unittest.IsolatedAsyncioTestCase):
              patch.object(system_ops, 'INTERNAL_API_KEY', ''), \
              patch.object(system_ops, 'fetch_api_json_async', AsyncMock(return_value=(200, {}))):
             await system_ops.status_command(update, SimpleNamespace())
-        self.assertIn('Key <code>FALTA</code>', update.effective_message.reply_text.await_args.args[0])
+        self.assertIn('Clave FALTA', update.effective_message.reply_text.await_args.args[0])
 
     async def test_unavailable_web_returns_error_message(self):
         update = self.update()
