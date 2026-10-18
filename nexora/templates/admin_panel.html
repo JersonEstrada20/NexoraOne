@@ -63,7 +63,7 @@
           <div><span class="eyebrow">VISTA GENERAL</span><h2>Resumen</h2></div>
           <span class="live-pill"><span aria-hidden="true"></span> Sesión activa</span>
         </div>
-        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">Resumen en modo rápido: los análisis del historial se cargan en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a> porque la base remota está tardando.</div>{% endif %}
+        {% if not dashboard.analytics_loaded %}<div class="flash" role="status">El resumen omite los análisis del historial para cargar más ligero. Puedes consultarlos en <a href="{{ url_for('admin_panel', section='estadisticas') }}">Estadísticas</a>.</div>{% endif %}
         <div class="summary">
           <div class="metric"><span class="pill">🗂️ Categorías</span><h3>{{ categories|length }}</h3><div class="small">Secciones del catálogo</div></div>
           <div class="metric"><span class="pill">⚡ Comandos</span><h3>{{ commands|length }}</h3><div class="small">Servicios registrados</div></div>
