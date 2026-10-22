@@ -18,6 +18,7 @@ from urllib.parse import quote_plus, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -1069,7 +1070,12 @@ async def choose_quality(callback: CallbackQuery):
 async def cancel_download(callback: CallbackQuery):
     job_id = callback.data.rsplit(":", 1)[-1]
     if DOWNLOAD_OWNERS.get(job_id) != callback.from_user.id:
-        await callback.answer("Esta descarga no te pertenece.", show_alert=True)
+        try:
+            await callback.answer(
+                "Esta descarga ya no está activa. Envía el enlace nuevamente.", show_alert=True
+            )
+        except TelegramBadRequest:
+            logger.debug("Se ignoró una consulta de cancelación vencida: job=%s", job_id)
         return
     cancel_user_download(callback.from_user.id)
     await callback.answer("Cancelando…")
@@ -1164,7 +1170,8 @@ async def _send_tiktok_carousel(message: Message, request: dict):
 
 async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Path,
                                         output_path: Path, fallback_duration: int,
-                                        job_id: str) -> float:
+                                        job_id: str, status_message: Message | None = None,
+                                        reply_markup=None) -> float:
     probe = await asyncio.to_thread(
         subprocess.run,
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -1180,12 +1187,16 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     duration = min(duration, float(MAX_DOWNLOAD_SECONDS))
 
     seconds_per_image = duration / len(image_paths)
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    # A still slideshow does not need 25 fps. Lower resolution/FPS keeps the
+    # encode responsive on the bot's small Northflank CPU allocation.
+    fps = 8
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-stats_period", "2",
+               "-progress", "pipe:1", "-nostats", "-y"]
     for path in image_paths:
-        # Loop each still as a real 25 fps stream with a bounded segment length.
+        # Loop each still as a real stream with a bounded segment length.
         # The concat demuxer treats still-image duration metadata inconsistently
         # and can leave the resulting MP4 with only a single frame (00:00).
-        command.extend(("-loop", "1", "-framerate", "25", "-t",
+        command.extend(("-loop", "1", "-framerate", str(fps), "-t",
                         f"{seconds_per_image:.6f}", "-i", str(path)))
     audio_input = len(image_paths)
     command.extend(("-i", str(audio_path)))
@@ -1194,8 +1205,8 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     concat_inputs = []
     for index in range(len(image_paths)):
         filters.append(
-            f"[{index}:v]scale=720:1280:force_original_aspect_ratio=decrease,"
-            f"pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,"
+            f"[{index}:v]scale=540:960:force_original_aspect_ratio=decrease,"
+            f"pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
             f"format=yuv420p,setpts=PTS-STARTPTS[v{index}]"
         )
         concat_inputs.append(f"[v{index}]")
@@ -1205,23 +1216,71 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     command.extend((
         "-filter_complex", ";".join(filters), "-map", "[v]",
         "-map", f"{audio_input}:a:0", "-t", f"{duration:.3f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-threads", "1",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-        "-shortest", "-movflags", "+faststart", str(output_path),
+        "-shortest", "-movflags", "+faststart", "-f", "mp4", str(output_path),
     ))
 
+    logger.info("TikTok slideshow encode started: job=%s images=%s duration=%.1fs",
+                job_id, len(image_paths), duration)
     process = await asyncio.create_subprocess_exec(
         *command,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     DOWNLOAD_PROCESSES[job_id] = process
+    stderr_task = asyncio.create_task(process.stderr.read())
+    last_percent = -1
+    started_at = monotonic()
     try:
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=MAX_DOWNLOAD_SECONDS)
+        while True:
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
+            except asyncio.TimeoutError:
+                elapsed = monotonic() - started_at
+                if elapsed >= MAX_DOWNLOAD_SECONDS:
+                    raise asyncio.TimeoutError("La creación del video excedió el tiempo máximo.")
+                logger.info("TikTok slideshow encode still running: job=%s elapsed=%.0fs",
+                            job_id, elapsed)
+                if status_message:
+                    try:
+                        await status_message.edit_text(
+                            "⚙️ El servidor sigue creando el video…", reply_markup=reply_markup
+                        )
+                    except Exception:
+                        pass
+                continue
+            if not line:
+                break
+            if monotonic() - started_at >= MAX_DOWNLOAD_SECONDS:
+                raise asyncio.TimeoutError("La creación del video excedió el tiempo máximo.")
+            key, _, raw_value = line.decode("ascii", errors="ignore").strip().partition("=")
+            if key == "out_time_us":
+                try:
+                    percent = min(99, int(float(raw_value) / (duration * 10_000)))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+                rounded = (percent // 10) * 10
+                if rounded >= 10 and rounded > last_percent:
+                    last_percent = rounded
+                    logger.info("TikTok slideshow encode progress: job=%s percent=%s",
+                                job_id, rounded)
+                    if status_message:
+                        try:
+                            await status_message.edit_text(
+                                f"⚙️ Creando el video… {rounded}%", reply_markup=reply_markup
+                            )
+                        except Exception:
+                            pass
+        await asyncio.wait_for(process.wait(), timeout=30)
+        stderr = await stderr_task
     except BaseException:
         if process.returncode is None:
             _terminate_process(process)
             await process.wait()
+        if not stderr_task.done():
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
         raise
     finally:
         DOWNLOAD_PROCESSES.pop(job_id, None)
@@ -1229,6 +1288,8 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
         raise DownloadCancelled()
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
+        logger.error("TikTok slideshow FFmpeg failed: job=%s exit=%s detail=%s",
+                     job_id, process.returncode, detail[-1] if detail else "no stderr")
         raise RuntimeError(detail[-1] if detail else "No se pudo crear el video del carrusel.")
     result = await asyncio.to_thread(
         subprocess.run,
@@ -1242,6 +1303,8 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
         output_duration = 0
     if result.returncode != 0 or output_duration < min(duration * 0.9, duration - 1.0):
         raise RuntimeError("El video generado quedó incompleto; no se enviará como si estuviera listo.")
+    logger.info("TikTok slideshow encode completed: job=%s duration=%.1fs bytes=%s",
+                job_id, output_duration, output_path.stat().st_size)
     return duration
 
 
@@ -1286,7 +1349,8 @@ async def _send_tiktok_slideshow_video(message: Message, request: dict):
         output_path = work / "tiktok_con_sonido.mp4"
         await message.edit_text("⚙️ Creando el video…", reply_markup=cancel.as_markup())
         duration = await _build_tiktok_slideshow_video(
-            image_paths, audio_path, output_path, request.get("audio_duration", 0), job_id
+            image_paths, audio_path, output_path, request.get("audio_duration", 0), job_id,
+            status_message=message, reply_markup=cancel.as_markup(),
         )
         if output_path.stat().st_size > MAX_UPLOAD:
             raise RuntimeError("El video creado supera el límite de Telegram.")
