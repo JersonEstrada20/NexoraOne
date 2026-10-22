@@ -570,22 +570,46 @@ def _download_remote_file(url: str, destination: Path):
 def _download_tiktok_audio(url: str, destination: Path):
     if not _is_tiktok_asset_url(url):
         raise ValueError("TikTok devolvió una ubicación de audio no permitida.")
-    request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"})
-    with urlopen(request, timeout=30) as response:
-        if not _is_tiktok_asset_url(response.geturl()):
-            raise RuntimeError("TikTok redirigió el audio a una ubicación no permitida.")
-        if not response.headers.get_content_type().startswith("audio/"):
+    request = Request(url, headers={
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.tiktok.com/",
+        "Accept": "*/*",
+    })
+    try:
+        with urlopen(request, timeout=30) as response:
+            if not _is_tiktok_asset_url(response.geturl()):
+                raise RuntimeError("TikTok redirigió el audio a una ubicación no permitida.")
+            content_type = response.headers.get_content_type()
+            declared_size = response.headers.get("Content-Length")
+            if declared_size and int(declared_size) > MAX_UPLOAD:
+                raise RuntimeError("La pista de audio supera el límite de Telegram.")
+            total = 0
+            with destination.open("wb") as output:
+                while chunk := response.read(256 * 1024):
+                    total += len(chunk)
+                    if total > MAX_UPLOAD:
+                        raise RuntimeError("La pista de audio supera el límite de Telegram.")
+                    output.write(chunk)
+        # CDN responses may use application/octet-stream for a valid audio
+        # asset. Let ffprobe validate the actual stream instead of trusting the
+        # MIME header, and emit enough sanitized diagnostics for CDN failures.
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(destination)],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if probe.returncode != 0 or "audio" not in probe.stdout.split():
+            logger.warning(
+                "TikTok audio asset rejected: mime=%s bytes=%s probe_exit=%s host=%s",
+                content_type, total, probe.returncode, urlparse(response.geturl()).hostname,
+            )
             raise RuntimeError("TikTok no devolvió una pista de audio válida.")
-        declared_size = response.headers.get("Content-Length")
-        if declared_size and int(declared_size) > MAX_UPLOAD:
-            raise RuntimeError("La pista de audio supera el límite de Telegram.")
-        total = 0
-        with destination.open("wb") as output:
-            while chunk := response.read(256 * 1024):
-                total += len(chunk)
-                if total > MAX_UPLOAD:
-                    raise RuntimeError("La pista de audio supera el límite de Telegram.")
-                output.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _rate_limit(user_id: int, limit: int = 3, window_seconds: int = 600) -> int:
