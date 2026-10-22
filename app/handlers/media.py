@@ -45,6 +45,7 @@ CANCELLED_DOWNLOADS: set[str] = set()
 DOWNLOAD_LIMITS: dict[int, deque] = defaultdict(deque)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 TIKTOK_API = "https://www.tikwm.com/api/"
+TIKTOK_API_FALLBACKS = ("https://tikwm.com/api/",)
 MAX_CAROUSEL_IMAGES = 35
 MAX_INSTAGRAM_ITEMS = 20
 MAX_DOWNLOAD_SECONDS = 15 * 60
@@ -384,13 +385,26 @@ def _download_instagram_item(url: str, destination: Path) -> tuple[Path, str]:
 def _fetch_tiktok_data(url: str) -> dict:
     if not _is_tiktok_url(url):
         raise ValueError("El enlace no pertenece a TikTok.")
-    endpoint = f"{TIKTOK_API}?{urlencode({'url': url, 'hd': '1'})}"
-    request = Request(endpoint, headers={"User-Agent": "NEXORA ONE/1.0", "Accept": "application/json"})
-    with urlopen(request, timeout=20) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    data = payload.get("data") if payload.get("code") == 0 else None
+    params = urlencode({"url": url, "hd": "1"})
+    data = None
+    last_error = None
+    for api_base in (TIKTOK_API, *TIKTOK_API_FALLBACKS):
+        request = Request(
+            f"{api_base}?{params}",
+            headers={"User-Agent": "NEXORA ONE/1.0", "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            data = payload.get("data") if payload.get("code") == 0 else None
+            if isinstance(data, dict):
+                break
+            last_error = RuntimeError(payload.get("msg") or "TikTok no devolvió información.")
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Falló el resolvedor TikTok %s: %s", api_base, exc)
     if not isinstance(data, dict):
-        raise RuntimeError(payload.get("msg") or "TikTok no devolvió información.")
+        raise RuntimeError("TikTok no devolvió información descargable.") from last_error
     images = [item for item in data.get("images") or [] if isinstance(item, str) and _is_tiktok_asset_url(item)]
     if images:
         music_info = data.get("music_info") if isinstance(data.get("music_info"), dict) else {}
