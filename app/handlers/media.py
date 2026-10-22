@@ -1332,9 +1332,9 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     duration = min(duration, float(MAX_DOWNLOAD_SECONDS))
 
     seconds_per_image = duration / len(image_paths)
-    # A still slideshow does not need 25 fps. Lower resolution/FPS keeps the
-    # encode responsive on the bot's small Northflank CPU allocation.
-    fps = 8
+    # This bot runs with a very small memory/CPU allocation. Keep the slideshow
+    # lightweight enough that FFmpeg can encode alongside the Telegram worker.
+    fps = 6
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-stats_period", "2",
                "-progress", "pipe:1", "-nostats", "-y"]
     for path in image_paths:
@@ -1350,18 +1350,21 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     concat_inputs = []
     for index in range(len(image_paths)):
         filters.append(
-            f"[{index}:v]scale=540:960:force_original_aspect_ratio=decrease,"
-            f"pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+            f"[{index}:v]scale=360:640:force_original_aspect_ratio=decrease,"
+            f"pad=360:640:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
             f"format=yuv420p,setpts=PTS-STARTPTS[v{index}]"
         )
         concat_inputs.append(f"[v{index}]")
-    filters.append(
-        f"{''.join(concat_inputs)}concat=n={len(image_paths)}:v=1:a=0[v]"
-    )
+    if len(image_paths) > 1:
+        filters.append(
+            f"{''.join(concat_inputs)}concat=n={len(image_paths)}:v=1:a=0[v]"
+        )
     command.extend((
-        "-filter_complex", ";".join(filters), "-map", "[v]",
+        "-filter_complex", ";".join(filters), "-map",
+        "[v]" if len(image_paths) > 1 else "[v0]",
         "-map", f"{audio_input}:a:0", "-t", f"{duration:.3f}",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-threads", "1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
         "-shortest", "-movflags", "+faststart", "-f", "mp4", str(output_path),
     ))
