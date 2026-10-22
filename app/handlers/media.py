@@ -12,9 +12,10 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict, deque
+from html.parser import HTMLParser
 from pathlib import Path
 from time import monotonic, time
-from urllib.parse import quote_plus, urlencode, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from aiogram import F, Router
@@ -323,6 +324,112 @@ def _is_tiktok_asset_url(url: str) -> bool:
     return parsed.scheme == "https" and any(host.endswith(suffix) for suffix in trusted_suffixes)
 
 
+class _TikTokPageDataParser(HTMLParser):
+    """Read TikTok's public hydration JSON without evaluating page scripts."""
+
+    def __init__(self):
+        super().__init__()
+        self._in_data_script = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script" and dict(attrs).get("id") == "__UNIVERSAL_DATA_FOR_REHYDRATION__":
+            self._in_data_script = True
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self._in_data_script:
+            self._in_data_script = False
+
+    def handle_data(self, data):
+        if self._in_data_script:
+            self.parts.append(data)
+
+
+def _tiktok_page_metadata(url: str) -> dict:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=20) as response:
+        page_url = response.geturl()
+    if not _is_tiktok_url(page_url):
+        raise ValueError("TikTok redirigió el enlace fuera de sus dominios.")
+
+    # TikTok's photo page often omits post data for anonymous visitors. The
+    # equivalent /video/{id} route contains the same post, including imagePost.
+    parsed = urlparse(page_url)
+    if "/photo/" in parsed.path:
+        parsed = parsed._replace(
+            path=parsed.path.replace("/photo/", "/video/", 1), query="", fragment=""
+        )
+        page_url = urlunparse(parsed)
+    with urlopen(Request(page_url, headers=headers), timeout=20) as response:
+        if response.headers.get_content_type() != "text/html":
+            raise RuntimeError("TikTok no devolvió la página de la publicación.")
+        page = response.read(8 * 1024 * 1024 + 1)
+    if len(page) > 8 * 1024 * 1024:
+        raise RuntimeError("La página de TikTok superó el tamaño permitido.")
+
+    parser = _TikTokPageDataParser()
+    parser.feed(page.decode("utf-8", errors="replace"))
+    if not parser.parts:
+        raise RuntimeError("TikTok no incluyó los datos públicos de la publicación.")
+    hydrated = json.loads("".join(parser.parts))
+    scope = hydrated.get("__DEFAULT_SCOPE__") or {}
+    detail = scope.get("webapp.video-detail") or {}
+    item = (detail.get("itemInfo") or {}).get("itemStruct") or {}
+    if not isinstance(item, dict) or detail.get("statusCode", 0) not in (0, "0"):
+        raise RuntimeError("TikTok no publicó los datos de esta publicación.")
+
+    image_post = item.get("imagePost") or {}
+    image_urls = []
+    for image in image_post.get("images") or []:
+        candidates = (image.get("imageURL") or {}).get("urlList") or []
+        image_url = next((candidate for candidate in candidates
+                          if isinstance(candidate, str) and _is_tiktok_asset_url(candidate)), None)
+        if image_url:
+            image_urls.append(image_url)
+
+    music = item.get("music") or {}
+    audio_url = music.get("playUrl")
+    if not isinstance(audio_url, str) or not _is_tiktok_asset_url(audio_url):
+        audio_url = None
+    try:
+        audio_duration = int(music.get("duration") or 0)
+    except (TypeError, ValueError):
+        audio_duration = 0
+    title = item.get("desc") or image_post.get("title") or "Publicación de TikTok"
+
+    if image_urls:
+        return {
+            "kind": "carousel", "images": image_urls[:MAX_CAROUSEL_IMAGES],
+            "audio_url": audio_url, "audio_duration": audio_duration, "title": title,
+        }
+
+    video = item.get("video") or {}
+    video_value = video.get("playAddr") or video.get("downloadAddr")
+    if isinstance(video_value, dict):
+        video_candidates = video_value.get("urlList") or []
+    elif isinstance(video_value, str):
+        video_candidates = [video_value]
+    else:
+        video_candidates = []
+    video_url = next((candidate for candidate in video_candidates
+                      if isinstance(candidate, str) and _is_tiktok_asset_url(candidate)), None)
+    try:
+        video_duration = int(video.get("duration") or 0)
+    except (TypeError, ValueError):
+        video_duration = 0
+    if video_url and video_duration > 0:
+        return {"kind": "video", "video_url": video_url, "title": title}
+    raise RuntimeError("La publicación no contiene fotos ni video descargable.")
+
+
 def _is_instagram_url(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower().removeprefix("www.")
@@ -386,13 +493,27 @@ def _download_instagram_item(url: str, destination: Path) -> tuple[Path, str]:
 def _fetch_tiktok_data(url: str) -> dict:
     if not _is_tiktok_url(url):
         raise ValueError("El enlace no pertenece a TikTok.")
+    try:
+        return _tiktok_page_metadata(url)
+    except Exception as exc:
+        logger.warning("No se pudieron leer los metadatos públicos de TikTok: %s", exc)
+
     params = urlencode({"url": url, "hd": "1"})
     data = None
     last_error = None
     for api_base in (TIKTOK_API, *TIKTOK_API_FALLBACKS):
         request = Request(
             f"{api_base}?{params}",
-            headers={"User-Agent": "NEXORA ONE/1.0", "Accept": "application/json"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.tikwm.com/",
+                "Origin": "https://www.tikwm.com",
+            },
         )
         try:
             with urlopen(request, timeout=20) as response:
