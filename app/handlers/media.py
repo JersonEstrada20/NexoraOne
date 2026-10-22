@@ -268,11 +268,16 @@ def _quality_keyboard(token: str, audio: bool):
     return builder.as_markup()
 
 
-def _direct_keyboard(token: str, carousel: bool = False):
+def _direct_keyboard(token: str, carousel: bool = False, has_audio: bool = False):
     builder = InlineKeyboardBuilder()
-    label = "🖼 Descargar fotos" if carousel else "📥 Descargar video"
-    action = "carousel" if carousel else "direct"
-    builder.button(text=label, callback_data=f"media:{action}:{token}")
+    if carousel:
+        builder.button(text="🖼 Descargar fotos", callback_data=f"media:carousel:{token}")
+        if has_audio:
+            builder.button(text="🎬 Crear video con audio", callback_data=f"media:carouselvideo:{token}")
+        builder.button(text="❌ Cancelar", callback_data=f"media:dismiss:{token}")
+        builder.adjust(2 if has_audio else 1, 1)
+        return builder.as_markup()
+    builder.button(text="📥 Descargar video", callback_data=f"media:direct:{token}")
     builder.button(text="❌ Cancelar", callback_data=f"media:dismiss:{token}")
     builder.adjust(1)
     return builder.as_markup()
@@ -388,8 +393,21 @@ def _fetch_tiktok_data(url: str) -> dict:
         raise RuntimeError(payload.get("msg") or "TikTok no devolvió información.")
     images = [item for item in data.get("images") or [] if isinstance(item, str) and _is_tiktok_asset_url(item)]
     if images:
-        return {"kind": "carousel", "images": images[:MAX_CAROUSEL_IMAGES],
-                "title": data.get("title") or "Carrusel de TikTok"}
+        music_info = data.get("music_info") if isinstance(data.get("music_info"), dict) else {}
+        audio_url = music_info.get("play") or data.get("music")
+        if not isinstance(audio_url, str) or not _is_tiktok_asset_url(audio_url):
+            audio_url = None
+        try:
+            audio_duration = int(music_info.get("duration") or 0)
+        except (TypeError, ValueError):
+            audio_duration = 0
+        return {
+            "kind": "carousel",
+            "images": images[:MAX_CAROUSEL_IMAGES],
+            "audio_url": audio_url,
+            "audio_duration": audio_duration,
+            "title": data.get("title") or "Carrusel de TikTok",
+        }
     video_url = data.get("hdplay") or data.get("play")
     if isinstance(video_url, str) and _is_tiktok_asset_url(video_url) and int(data.get("duration") or 0) > 0:
         return {"kind": "video", "video_url": video_url,
@@ -411,6 +429,27 @@ def _download_remote_file(url: str, destination: Path):
             if total > 15 * 1024 * 1024:
                 raise RuntimeError("Una imagen supera el límite permitido.")
             output.write(chunk)
+
+
+def _download_tiktok_audio(url: str, destination: Path):
+    if not _is_tiktok_asset_url(url):
+        raise ValueError("TikTok devolvió una ubicación de audio no permitida.")
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"})
+    with urlopen(request, timeout=30) as response:
+        if not _is_tiktok_asset_url(response.geturl()):
+            raise RuntimeError("TikTok redirigió el audio a una ubicación no permitida.")
+        if not response.headers.get_content_type().startswith("audio/"):
+            raise RuntimeError("TikTok no devolvió una pista de audio válida.")
+        declared_size = response.headers.get("Content-Length")
+        if declared_size and int(declared_size) > MAX_UPLOAD:
+            raise RuntimeError("La pista de audio supera el límite de Telegram.")
+        total = 0
+        with destination.open("wb") as output:
+            while chunk := response.read(256 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD:
+                    raise RuntimeError("La pista de audio supera el límite de Telegram.")
+                output.write(chunk)
 
 
 def _rate_limit(user_id: int, limit: int = 3, window_seconds: int = 600) -> int:
@@ -1109,6 +1148,129 @@ async def _send_tiktok_carousel(message: Message, request: dict):
         shutil.rmtree(work, ignore_errors=True)
 
 
+async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Path,
+                                        output_path: Path, fallback_duration: int,
+                                        job_id: str) -> float:
+    probe = await asyncio.to_thread(
+        subprocess.run,
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    try:
+        duration = float(probe.stdout.strip()) if probe.returncode == 0 else float(fallback_duration)
+    except (TypeError, ValueError):
+        duration = float(fallback_duration)
+    if duration <= 0:
+        duration = max(3.0, len(image_paths) * 3.0)
+    duration = min(duration, float(MAX_DOWNLOAD_SECONDS))
+
+    seconds_per_image = duration / len(image_paths)
+    manifest = output_path.parent / "slideshow.txt"
+    lines = []
+    for index, path in enumerate(image_paths):
+        lines.extend((f"file '{path.name}'", f"duration {seconds_per_image:.3f}"))
+    # The concat demuxer needs the final file repeated to honor its duration.
+    lines.append(f"file '{image_paths[-1].name}'")
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "concat", "-safe", "0", "-i", str(manifest),
+        "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", "scale=720:-2,format=yuv420p", "-r", "25",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
+        "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}",
+        "-shortest", "-movflags", "+faststart", str(output_path),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True, cwd=str(output_path.parent),
+    )
+    DOWNLOAD_PROCESSES[job_id] = process
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=MAX_DOWNLOAD_SECONDS)
+    except BaseException:
+        if process.returncode is None:
+            _terminate_process(process)
+            await process.wait()
+        raise
+    finally:
+        DOWNLOAD_PROCESSES.pop(job_id, None)
+    if job_id in CANCELLED_DOWNLOADS:
+        raise DownloadCancelled()
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
+        raise RuntimeError(detail[-1] if detail else "No se pudo crear el video del carrusel.")
+    return duration
+
+
+async def _send_tiktok_slideshow_video(message: Message, request: dict):
+    images = request.get("images") or []
+    audio_url = request.get("audio_url")
+    user_id = request["user_id"]
+    if not images or not audio_url:
+        await message.edit_text("Este carrusel no tiene fotos o audio descargable.")
+        return
+    if user_id in ACTIVE_DOWNLOADS:
+        await message.edit_text("⏳ Ya tienes otra descarga activa. Cancélala o espera que termine.")
+        return
+
+    work = Path(tempfile.mkdtemp(prefix="doxertube_slideshow_"))
+    job_id = secrets.token_hex(4)
+    ACTIVE_DOWNLOADS[user_id] = job_id
+    DOWNLOAD_OWNERS[job_id] = user_id
+    cancel = InlineKeyboardBuilder()
+    cancel.button(text="❌ Cancelar video", callback_data=f"media:cancel:{job_id}")
+    try:
+        image_paths = []
+        await message.edit_text(f"🎬 Preparando video con sonido · 0/{len(images)}…", reply_markup=cancel.as_markup())
+        for index, url in enumerate(images, 1):
+            if job_id in CANCELLED_DOWNLOADS:
+                raise DownloadCancelled()
+            path = work / f"foto_{index:02d}.jpg"
+            await asyncio.to_thread(_download_remote_file, url, path)
+            image_paths.append(path)
+            await message.edit_text(
+                f"🎬 Descargando fotos · {index}/{len(images)}…", reply_markup=cancel.as_markup()
+            )
+
+        if job_id in CANCELLED_DOWNLOADS:
+            raise DownloadCancelled()
+        audio_path = work / "sonido.mp3"
+        await message.edit_text("🎵 Descargando el sonido original…", reply_markup=cancel.as_markup())
+        await asyncio.to_thread(_download_tiktok_audio, audio_url, audio_path)
+
+        if job_id in CANCELLED_DOWNLOADS:
+            raise DownloadCancelled()
+        output_path = work / "tiktok_con_sonido.mp4"
+        await message.edit_text("⚙️ Creando el video…", reply_markup=cancel.as_markup())
+        duration = await _build_tiktok_slideshow_video(
+            image_paths, audio_path, output_path, request.get("audio_duration", 0), job_id
+        )
+        if output_path.stat().st_size > MAX_UPLOAD:
+            raise RuntimeError("El video creado supera el límite de Telegram.")
+
+        title = str(request.get("title") or "TikTok")[:900]
+        await message.edit_text("📤 Enviando el video a Telegram…", reply_markup=cancel.as_markup())
+        await message.answer_video(
+            FSInputFile(output_path), caption=f"🎬 {title}\n🎵 Con sonido original · {int(duration)} s",
+            supports_streaming=True,
+        )
+        await message.edit_text("✅ Video con sonido descargado.")
+    except DownloadCancelled:
+        await message.edit_text("✅ Descarga cancelada.")
+    except Exception as exc:
+        logger.exception("Falló la creación del video de TikTok para el usuario %s", user_id)
+        await message.edit_text(
+            f"❌ No pude crear el video. {_friendly_download_error(exc)}",
+            reply_markup=_retry_tiktok_video_keyboard(request),
+        )
+    finally:
+        ACTIVE_DOWNLOADS.pop(user_id, None)
+        DOWNLOAD_OWNERS.pop(job_id, None)
+        CANCELLED_DOWNLOADS.discard(job_id)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 async def _send_instagram_gallery(message: Message, request: dict):
     urls = request.get("items") or []
     work = Path(tempfile.mkdtemp(prefix="doxertube_instagram_"))
@@ -1183,6 +1345,16 @@ def _retry_carousel_keyboard(request: dict):
     return builder.as_markup()
 
 
+def _retry_tiktok_video_keyboard(request: dict):
+    token = secrets.token_hex(4)
+    _remember_request(MEDIA_REQUESTS, token, request)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Reintentar video", callback_data=f"media:carouselvideo:{token}")
+    builder.button(text="❌ Cerrar", callback_data=f"media:dismiss:{token}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
 @router.callback_query(F.data.startswith("media:carousel:"))
 async def download_tiktok_carousel(callback: CallbackQuery):
     token = callback.data.rsplit(":", 1)[-1]
@@ -1196,6 +1368,24 @@ async def download_tiktok_carousel(callback: CallbackQuery):
         return
     await callback.answer("Descargando fotos…")
     await _send_tiktok_carousel(callback.message, request)
+
+
+@router.callback_query(F.data.startswith("media:carouselvideo:"))
+async def download_tiktok_carousel_video(callback: CallbackQuery):
+    token = callback.data.rsplit(":", 1)[-1]
+    request = MEDIA_REQUESTS.pop(token, None)
+    if not request:
+        await callback.answer("Esta selección ya venció.", show_alert=True)
+        return
+    if request.get("user_id") != callback.from_user.id:
+        _remember_request(MEDIA_REQUESTS, token, request)
+        await callback.answer("Este carrusel pertenece a otra persona.", show_alert=True)
+        return
+    if not request.get("audio_url"):
+        await callback.answer("Este carrusel no tiene audio disponible.", show_alert=True)
+        return
+    await callback.answer("Creando video con el sonido original…")
+    await _send_tiktok_slideshow_video(callback.message, request)
 
 
 @router.callback_query(F.data.startswith("media:instagram:"))
@@ -1267,7 +1457,8 @@ async def _ask_video_quality(message: Message, query: str, user_id: int, documen
             count = len(data["images"])
             await status.edit_text(
                 f"🖼 <b>Carrusel de TikTok detectado</b>\nEncontré {count} foto{'s' if count != 1 else ''}.",
-                parse_mode="HTML", reply_markup=_direct_keyboard(token, carousel=True),
+                parse_mode="HTML",
+                reply_markup=_direct_keyboard(token, carousel=True, has_audio=bool(data.get("audio_url"))),
             )
             return
         await _send_download(
