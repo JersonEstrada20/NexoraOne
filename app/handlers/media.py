@@ -1166,24 +1166,40 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     duration = min(duration, float(MAX_DOWNLOAD_SECONDS))
 
     seconds_per_image = duration / len(image_paths)
-    manifest = output_path.parent / "slideshow.txt"
-    lines = []
-    for index, path in enumerate(image_paths):
-        lines.extend((f"file '{path.name}'", f"duration {seconds_per_image:.3f}"))
-    # The concat demuxer needs the final file repeated to honor its duration.
-    lines.append(f"file '{image_paths[-1].name}'")
-    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for path in image_paths:
+        # Loop each still as a real 25 fps stream with a bounded segment length.
+        # The concat demuxer treats still-image duration metadata inconsistently
+        # and can leave the resulting MP4 with only a single frame (00:00).
+        command.extend(("-loop", "1", "-framerate", "25", "-t",
+                        f"{seconds_per_image:.6f}", "-i", str(path)))
+    audio_input = len(image_paths)
+    command.extend(("-i", str(audio_path)))
+
+    filters = []
+    concat_inputs = []
+    for index in range(len(image_paths)):
+        filters.append(
+            f"[{index}:v]scale=720:1280:force_original_aspect_ratio=decrease,"
+            f"pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25,"
+            f"format=yuv420p,setpts=PTS-STARTPTS[v{index}]"
+        )
+        concat_inputs.append(f"[v{index}]")
+    filters.append(
+        f"{''.join(concat_inputs)}concat=n={len(image_paths)}:v=1:a=0[v]"
+    )
+    command.extend((
+        "-filter_complex", ";".join(filters), "-map", "[v]",
+        "-map", f"{audio_input}:a:0", "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-shortest", "-movflags", "+faststart", str(output_path),
+    ))
 
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "concat", "-safe", "0", "-i", str(manifest),
-        "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0",
-        "-vf", "scale=720:-2,format=yuv420p", "-r", "25",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
-        "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}",
-        "-shortest", "-movflags", "+faststart", str(output_path),
+        *command,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        start_new_session=True, cwd=str(output_path.parent),
+        start_new_session=True,
     )
     DOWNLOAD_PROCESSES[job_id] = process
     try:
@@ -1200,6 +1216,18 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
         raise RuntimeError(detail[-1] if detail else "No se pudo crear el video del carrusel.")
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(output_path)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    try:
+        output_duration = float(result.stdout.strip())
+    except (TypeError, ValueError):
+        output_duration = 0
+    if result.returncode != 0 or output_duration < min(duration * 0.9, duration - 1.0):
+        raise RuntimeError("El video generado quedó incompleto; no se enviará como si estuviera listo.")
     return duration
 
 
