@@ -1334,10 +1334,7 @@ async def _build_tiktok_slideshow_video(image_paths: list[Path], audio_path: Pat
     seconds_per_image = duration / len(image_paths)
     # This bot runs with a very small memory/CPU allocation. Keep the slideshow
     # lightweight enough that FFmpeg can encode alongside the Telegram worker.
-    # One still image only needs one frame per second; this cuts encoding work
-    # substantially on the bot's 0.1-vCPU Northflank instance. Multi-photo
-    # slideshows retain a smoother cadence when switching images.
-    fps = 1 if len(image_paths) == 1 else 6
+    fps = 6
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-stats_period", "2",
                "-progress", "pipe:1", "-nostats", "-y"]
     for path in image_paths:
