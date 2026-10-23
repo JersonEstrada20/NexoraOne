@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes
 from telegram.error import NetworkError
 from nexora.storage import db_path
 from nexora.comandos.utils import API_BASE, configured_admin_ids, fetch_api_json, fetch_api_json_async
-from nexora.request_history import append_request_event, latest_request_message
+from nexora.request_history import append_request_event
 
 DB_FILE = db_path("requests.db")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -604,10 +604,6 @@ def _append_note(previous: str | None, note: str, *, author_id=None, event: str 
     return append_request_event(previous, note, author_id=author_id, kind=event)
 
 
-def _latest_request_note(notes: str | None) -> str:
-    return latest_request_message(notes)
-
-
 def _mark_request_delivery(cursor, request_id: int, admin_id: int | None, note: str, *, charged: int | None = None, resolved: bool = False, event: str = "reply"):
     row = _get_request_by_id(cursor, request_id)
     if not row:
@@ -826,18 +822,18 @@ async def _done_request_by_id(context: ContextTypes.DEFAULT_TYPE, admin_id: int,
         conn.close()
         return False, "Solicitud no encontrada."
 
-    request_id, user_id, username, command, payload, status, admin_msg_id, cost, charged, delivery_count, created_at, resolved_at, resolved_by, resolution_note = row[:14]
+    request_id, user_id, username, command, payload, status, admin_msg_id, cost, charged, delivery_count, created_at, resolved_at, resolved_by, _resolution_note = row[:14]
     if status != "pending":
         conn.close()
         return False, f"⚠️ La solicitud #{request_id} ya está en estado {status}."
 
     final_note = note or "✅ Tu solicitud fue completada por el equipo NEXORA ONE."
-    latest_reply = _latest_request_note(resolution_note)
-    body = final_note
-    if latest_reply:
-        body = f"{latest_reply}\n\n{final_note}"
     try:
-        await _send_delivery_message(context, row, _user_request_card("SOLICITUD FINALIZADA", request_id, command, body), author_id=admin_id)
+        await _send_delivery_message(
+            context, row,
+            _user_request_card("SOLICITUD FINALIZADA", request_id, command, final_note),
+            author_id=admin_id,
+        )
     except RequestDeliveryUncertain as exc:
         conn.close()
         return False, str(exc)
