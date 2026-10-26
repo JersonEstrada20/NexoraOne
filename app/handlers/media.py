@@ -14,7 +14,8 @@ import tempfile
 from collections import defaultdict, deque
 from html.parser import HTMLParser
 from pathlib import Path
-from time import monotonic, time
+from threading import Lock
+from time import monotonic, sleep, time
 from urllib.parse import quote_plus, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
@@ -48,6 +49,9 @@ DOWNLOAD_LIMITS: dict[int, deque] = defaultdict(deque)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 TIKTOK_API = "https://www.tikwm.com/api/"
 TIKTOK_API_FALLBACKS = ("https://tikwm.com/api/",)
+TIKTOK_API_REQUEST_LOCK = Lock()
+TIKTOK_API_LAST_REQUEST = 0.0
+TIKTOK_API_MIN_INTERVAL = 1.2
 MAX_CAROUSEL_IMAGES = 35
 MAX_INSTAGRAM_ITEMS = 20
 MAX_DOWNLOAD_SECONDS = 15 * 60
@@ -516,12 +520,25 @@ def _fetch_tiktok_data(url: str) -> dict:
             },
         )
         try:
-            with urlopen(request, timeout=20) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            data = payload.get("data") if payload.get("code") == 0 else None
+            # TikWM's free endpoint allows only one request per second per
+            # client IP. Serialize across all worker threads and leave a small
+            # margin so concurrent users do not receive transient rate limits.
+            global TIKTOK_API_LAST_REQUEST
+            with TIKTOK_API_REQUEST_LOCK:
+                elapsed = monotonic() - TIKTOK_API_LAST_REQUEST
+                wait = TIKTOK_API_MIN_INTERVAL - elapsed
+                if wait > 0:
+                    sleep(wait)
+                TIKTOK_API_LAST_REQUEST = monotonic()
+                with urlopen(request, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            api_ok = str(payload.get("code")) == "0"
+            data = payload.get("data") if api_ok else None
             if isinstance(data, dict):
                 break
             last_error = RuntimeError(payload.get("msg") or "TikTok no devolvió información.")
+            logger.warning("El resolvedor TikTok %s rechazó la consulta: %s",
+                           urlparse(api_base).hostname, last_error)
         except Exception as exc:
             last_error = exc
             logger.warning("Falló el resolvedor TikTok %s: %s", api_base, exc)
